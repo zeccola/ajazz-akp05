@@ -16,11 +16,12 @@ first if you're modifying the protocol code.
 ## Setup
 
 ```
-pip install pywinusb pillow
+pip install pywinusb pillow requests flask
 ```
 
 Windows only (`pywinusb` wraps the native Windows HID API). No compiler or
-extra drivers needed.
+extra drivers needed. `requests`/`flask` are only needed for the Home
+Assistant bridge and its web UI.
 
 ## Scripts
 
@@ -72,10 +73,85 @@ extra drivers needed.
   ```
 
 - **`akp05_set_brightness.py`** — set display brightness (buttons + strip
-  together).
+  together). `off` dims to 0% and clears everything to black (destructive —
+  wipes images, `on` can't restore them); `on` just restores 100% brightness.
   ```
   python akp05_set_brightness.py 75
+  python akp05_set_brightness.py off
+  python akp05_set_brightness.py on
   ```
+
+### Home Assistant
+
+- **`akp05_homeassistant.py`** — bridge button/encoder presses to Home
+  Assistant service calls over its REST API (e.g. button 1 toggles
+  `light.bedroom_lights`).
+  Setup:
+  1. In Home Assistant: profile → Security → Long-Lived Access Tokens →
+     Create Token.
+  2. Copy `ha_config.example.json` to `ha_config.json` (git-ignored — holds
+     your token, don't commit it) and fill in `base_url`, `token`, and a
+     `bindings` map from event IDs to just an entity ID, e.g.
+     ```json
+     "button_1": { "entity_id": "light.bedroom_lights" }
+     ```
+     Domain (the part before the dot, e.g. `light`) is read off the entity
+     ID automatically; the service called defaults to `toggle` (covers
+     light/switch/fan/etc). Add an explicit `"service"` to override it for
+     entities that need something else, e.g.
+     `{ "entity_id": "scene.movie_night", "service": "turn_on" }`.
+     Bindable event IDs: `button_1`..`button_10`, `encoder_1_button`..
+     `encoder_4_button`, `encoder_1_cw`/`encoder_1_ccw` (and `_2_`/`_3_`/`_4_`).
+     Twists (`_cw`/`_ccw`) fire once per detent, not press/release, so they
+     suit *incremental* actions better than the default toggle — add
+     `"data"` for extra service parameters beyond `entity_id`, confirmed
+     live against a real dimmable light:
+     ```json
+     "encoder_1_cw":  { "entity_id": "light.bedroom_lights", "service": "turn_on", "data": {"brightness_step_pct": 10} },
+     "encoder_1_ccw": { "entity_id": "light.bedroom_lights", "service": "turn_on", "data": {"brightness_step_pct": -10} }
+     ```
+     or for a media player's volume, no `data` needed:
+     ```json
+     "encoder_2_cw":  { "entity_id": "media_player.living_room", "service": "volume_up" },
+     "encoder_2_ccw": { "entity_id": "media_player.living_room", "service": "volume_down" }
+     ```
+  3. Run it:
+     ```
+     python akp05_homeassistant.py
+     ```
+  Uses the same full wake-up as the listener scripts, so starting it clears
+  your button images — flash icons after starting, or just leave it running.
+
+  Optional per-`button_N` binding: `"icon": "floor-lamp-outline"` (or any
+  [Material Design Icons](https://pictogrammers.com/library/mdi/) name —
+  the same set Home Assistant's own UI uses). After the service call, it
+  queries the entity's real state from HA and paints that icon on the
+  button, green (on) / red (off) / gray (unknown) — also synced once on
+  startup. See `akp05_icons.py`.
+
+- **`akp05_web.py`** — local web UI for editing `ha_config.json`'s bindings
+  instead of hand-editing JSON, **and** for starting/stopping
+  `akp05_homeassistant.py` itself, so this is the only script you need to
+  run directly day to day.
+  ```
+  python akp05_web.py
+  ```
+  Open `http://127.0.0.1:5757`. Local-only (binds to 127.0.0.1), no login —
+  same trust boundary as editing the file directly. The access-token field
+  is always blank on load (never echoes the saved secret back into the
+  page); leave it blank on save to keep the current token. Buttons and
+  encoders (push + clockwise + counter-clockwise, all 4) are listed as
+  separate labeled rows — "Data" accepts a JSON object for extra service
+  parameters (see the encoder brightness/volume examples above); invalid
+  JSON there is rejected with an error and not saved, rather than silently
+  dropped.
+
+  The "Bridge" section runs `akp05_homeassistant.py` as a child process —
+  Start/Stop/Restart buttons, a running/stopped status, and a snapshot of
+  its recent output (reload the page or press a button to refresh it;
+  it's not a live-updating stream). Saving bindings does **not**
+  auto-restart the bridge if it's already running, on purpose — hit
+  Restart yourself so applying new config is a visible, explicit action.
 
 ### Internals / debugging
 
@@ -88,6 +164,12 @@ extra drivers needed.
   handy again if you ever need to probe a new wire-key or image size.
 - **`list_hid.py`** — enumerate the device's HID collection(s) and print
   their capabilities (report lengths, usage page, etc).
+- **`akp05_icons.py`** — renders any [Material Design Icons](https://pictogrammers.com/library/mdi/)
+  name (e.g. `floor-lamp-outline`, `fan`, `ceiling-light`) colored by
+  on/off/unknown state, using the same icon set Home Assistant's own UI
+  uses. First use downloads and caches the MDI font + name lookup
+  (~3MB total, one-time, `.mdi_cache/` — git-ignored); after that it's
+  fully offline. No fixed icon list to maintain — any name works.
 
 ## Key facts about the protocol
 

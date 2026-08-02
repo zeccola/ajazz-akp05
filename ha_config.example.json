@@ -1,0 +1,9 @@
+{
+  "base_url": "http://homeassistant.local:8123",
+  "token": "PASTE_YOUR_LONG_LIVED_ACCESS_TOKEN_HERE",
+  "bindings": {
+    "button_1": { "entity_id": "light.bedroom_lights", "icon": "lightbulb" },
+    "encoder_1_cw": { "entity_id": "light.bedroom_lights", "service": "turn_on", "data": {"brightness_step_pct": 10} },
+    "encoder_1_ccw": { "entity_id": "light.bedroom_lights", "service": "turn_on", "data": {"brightness_step_pct": -10} }
+  }
+}

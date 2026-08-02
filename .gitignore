@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# AKP05 scripts: local secrets/generated state, not for commit
+ha_config.json
+.akp05_strip_cache.png
+.mdi_cache/
