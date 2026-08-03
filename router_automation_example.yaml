@@ -1,0 +1,152 @@
+alias: Ajazz controller router
+description: ""
+triggers:
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_button_1
+    options:
+      event_type:
+        - pressed
+    id: "1"
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_button_2
+    options:
+      event_type:
+        - pressed
+    id: "2"
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_button_3
+    options:
+      event_type:
+        - pressed
+    id: "3"
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_button_4
+    options:
+      event_type:
+        - pressed
+    id: "4"
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_button_5
+    options:
+      event_type:
+        - pressed
+    id: "5"
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_button_6
+    options:
+      event_type:
+        - pressed
+    id: "6"
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_button_7
+    options:
+      event_type:
+        - pressed
+    id: "7"
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_button_8
+    options:
+      event_type:
+        - pressed
+    id: "8"
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_button_9
+    options:
+      event_type:
+        - pressed
+    id: "9"
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_button_10
+    options:
+      event_type:
+        - pressed
+    id: "10"
+  # Encoder knob PUSH (clicking it down) -- pressed/released, just like a
+  # button. Only encoder 1 is wired up below (no action assigned yet);
+  # copy this block for encoders 2-4 the same way as buttons 3-10.
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_encoder_1_button
+    options:
+      event_type:
+        - pressed
+    id: encoder_1_button
+  # Encoder TWIST (rotating it) -- NOT a press, a separate cw/ccw event
+  # on a separate entity. One trigger per direction.
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_encoder_1
+    options:
+      event_type:
+        - cw
+    id: encoder_1_cw
+  - trigger: event.received
+    target:
+      entity_id:
+        - event.ajazz_akp05_encoder_1
+    options:
+      event_type:
+        - ccw
+    id: encoder_1_ccw
+conditions: []
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: "1"
+        sequence:
+          - action: light.toggle
+            target:
+              entity_id: light.bedroom_lights
+      - conditions:
+          - condition: trigger
+            id: "2"
+        sequence:
+          - action: switch.toggle
+            target:
+              entity_id: switch.tapo_p110m2
+      # ... continue for buttons 3-10 and encoder_2_button..encoder_4_button,
+      # one "conditions: [id: ...] / sequence:" block each
+      - conditions:
+          - condition: trigger
+            id: encoder_1_cw
+        sequence:
+          - action: light.turn_on
+            target:
+              entity_id: light.bedroom_lights
+            data:
+              brightness_step_pct: 20
+      - conditions:
+          - condition: trigger
+            id: encoder_1_ccw
+        sequence:
+          - action: light.turn_on
+            target:
+              entity_id: light.bedroom_lights
+            data:
+              brightness_step_pct: -20
+      # ... encoder_2_cw/ccw .. encoder_4_cw/ccw, same shape
+    default: []
+mode: single

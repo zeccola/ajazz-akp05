@@ -1,11 +1,15 @@
 # AKP05 Bridge (Home Assistant add-on)
 
 Owns the USB connection to the Ajazz AKP05 on your Home Assistant OS /
-Supervised host and exposes it to Home Assistant purely via **MQTT
+Supervised host and exposes it to Home Assistant mainly via **MQTT
 discovery** — buttons/encoders become native automation triggers,
 brightness becomes a light entity, all automatically. This is the only
 component you need to install; there's no separate integration to copy
-into `/config/custom_components/`.
+into `/config/custom_components/`. It also talks directly to Home
+Assistant's own Core API (`homeassistant_api: true`, auto-configured,
+nothing for you to set up) for exactly one thing: the "Button N Linked
+Entity" text entities, which watch an arbitrary entity's on/off state to
+recolor a button's icon — see **Using it** below.
 
 ## Prerequisites
 
@@ -94,7 +98,8 @@ automatically once an MQTT broker add-on is running, no setup needed.
    "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
    "Add Integration" step needed) with a **Brightness** entity, 18 event
    entities (one per button, encoder button, and encoder twist pair),
-   and 10 **Button N Icon** text entities.
+   10 **Button N Icon** text entities, and 10 **Button N Linked Entity**
+   text entities.
 
 ## Using it
 
@@ -124,9 +129,20 @@ automatically once an MQTT broker add-on is running, no setup needed.
   by setting its text to empty. A name that doesn't exist just won't
   take — check the add-on's **Log** tab if a button doesn't update,
   that's the only place an invalid name gets reported.
-  For a version that's colored by an entity's actual on/off state (green
-  on / red off), automate it instead via `akp05/cmd`'s `set_icon` action
-  below, e.g. triggered on that entity's state changing.
+- **Showing a linked entity's on/off state on the icon — also directly
+  in the UI** — each button *also* has a **Button N Linked Entity** text
+  entity. Type an entity_id into it (e.g. `light.bedroom_lights`,
+  `switch.tapo_p110m2`) and the button's icon (whatever you set via the
+  Icon entity above) turns green when that entity is on, red when off,
+  live, no automation needed — it stays in sync no matter what actually
+  changes the entity (this button, another automation, physically
+  flipping a switch, the app). Clear a button's link by setting its text
+  to empty. This needs `homeassistant_api: true` (already set in this
+  add-on's `config.yaml`, nothing for you to configure) — if it's not
+  working, check the **Log** tab for "No SUPERVISOR_TOKEN" or a
+  websocket error. **Pick one or the other per button** — if you also
+  type into that button's Icon entity afterward, the next state change
+  just overwrites it back.
 - **Raw images/clearing/strip** — no MQTT entity type exists for
   uploading a file from the UI, so these stay plain MQTT commands. Call
   them from an automation with the built-in `mqtt.publish` service,
@@ -165,6 +181,8 @@ automatically once an MQTT broker add-on is running, no setup needed.
 | `akp05/brightness/state`     | publishes | `0`-`100` (retained)                  |
 | `akp05/button_<n>/icon/set`  | subscribes| MDI icon name, e.g. `floor-lamp-outline`; empty clears the button. `<n>` is `1`-`10`. |
 | `akp05/button_<n>/icon/state`| publishes | Echoes the name back, retained, only on a successful render |
+| `akp05/button_<n>/link/set`  | subscribes| An entity_id, e.g. `light.bedroom_lights`; empty unlinks. |
+| `akp05/button_<n>/link/state`| publishes | Echoes the entity_id back, retained         |
 | `akp05/cmd`                  | subscribes| JSON, see above                       |
 
 All of this is namespaced under `akp05/` and the MQTT discovery configs

@@ -1,0 +1,65 @@
+# SUPERSEDED for the simple case: the add-on now has a built-in
+# "Button N Linked Entity" text entity per button that does exactly
+# this natively (no automation needed) -- see akp05_bridge/README.md.
+# Keep this automation only if you want something the built-in version
+# can't do (e.g. more than on/off-based coloring, multiple conditions).
+alias: Ajazz icon sync
+description: Colors each button's icon green/red to match its linked entity's on/off state
+triggers:
+  - trigger: state
+    entity_id:
+      - light.bedroom_lights
+    id: "1"
+  - trigger: state
+    entity_id:
+      - switch.tapo_p110m2
+    id: "2"
+  # ... one "trigger: state / entity_id: [...] / id: N" block per button
+  # you want icon-synced, matching the router automation's button numbers
+  - trigger: homeassistant
+    event: start
+    id: startup
+conditions: []
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: "1"
+        sequence:
+          - action: mqtt.publish
+            data:
+              topic: akp05/cmd
+              payload: >-
+                {"action": "set_icon", "button": 1, "icon": "lightbulb",
+                "state": "{{ 'on' if trigger.to_state.state == 'on' else 'off' }}"}
+      - conditions:
+          - condition: trigger
+            id: "2"
+        sequence:
+          - action: mqtt.publish
+            data:
+              topic: akp05/cmd
+              payload: >-
+                {"action": "set_icon", "button": 2, "icon": "power-plug",
+                "state": "{{ 'on' if trigger.to_state.state == 'on' else 'off' }}"}
+      # ... matching branch per button added above
+      - conditions:
+          - condition: trigger
+            id: startup
+        sequence:
+          - action: mqtt.publish
+            data:
+              topic: akp05/cmd
+              payload: >-
+                {"action": "set_icon", "button": 1, "icon": "lightbulb",
+                "state": "{{ 'on' if is_state('light.bedroom_lights', 'on') else 'off' }}"}
+          - action: mqtt.publish
+            data:
+              topic: akp05/cmd
+              payload: >-
+                {"action": "set_icon", "button": 2, "icon": "power-plug",
+                "state": "{{ 'on' if is_state('switch.tapo_p110m2', 'on') else 'off' }}"}
+          # ... one mqtt.publish per button here too, same payload shape as
+          # its own branch above (this just runs all of them once on boot)
+    default: []
+mode: queued

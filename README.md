@@ -222,6 +222,12 @@ An "Ajazz AKP05" device then appears under Settings → Devices & Services
   **Button N Icon** text entity, type any [MDI](https://pictogrammers.com/library/mdi/)
   name into it and it renders and uploads immediately, no automation
   needed.
+- **Showing an entity's on/off state on a button** — also directly in
+  the UI: each button also has a **Button N Linked Entity** text entity,
+  type an entity_id into it (e.g. `light.bedroom_lights`) and that
+  button's icon turns green/red to track it live, again no automation
+  needed (uses Home Assistant's own Core API, `homeassistant_api: true`
+  — auto-configured, nothing to set up).
 - **Raw images/strip/clearing** — plain MQTT commands (topic
   `akp05/cmd`), called via the `mqtt.publish` service from an automation
   — see [`akp05_bridge/README.md`](akp05_bridge/README.md#using-it) for
