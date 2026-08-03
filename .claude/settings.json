@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python addon/akp05_bridge/sync_vendor.py)",
+      "Bash(python -m py_compile server.py sync_vendor.py akp05_device.py akp05_icons.py)"
+    ]
+  }
+}

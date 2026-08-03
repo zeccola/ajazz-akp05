@@ -83,6 +83,14 @@ Assistant bridge and its web UI.
 
 ### Home Assistant
 
+These two scripts run on a Windows PC with the device plugged into *it*,
+talking to HA over its REST API from the outside. If your HA install is
+Home Assistant OS/Supervised and you can plug the AKP05 into that host
+directly instead, see
+["Running natively on Home Assistant OS"](#running-natively-on-home-assistant-os)
+below — no separate always-on PC needed, and the device shows up as a
+real HA device with native automation triggers rather than a config file.
+
 - **`akp05_homeassistant.py`** — bridge button/encoder presses to Home
   Assistant service calls over its REST API (e.g. button 1 toggles
   `light.bedroom_lights`).
@@ -170,6 +178,90 @@ Assistant bridge and its web UI.
   uses. First use downloads and caches the MDI font + name lookup
   (~3MB total, one-time, `.mdi_cache/` — git-ignored); after that it's
   fully offline. No fixed icon list to maintain — any name works.
+
+## Running natively on Home Assistant OS
+
+If your HA install is Home Assistant OS (or Supervised) and the AKP05 is
+plugged straight into that host, you don't need a separate always-on
+Windows PC at all — a Supervisor add-on plus a matching custom
+integration expose it as a real HA device (buttons/encoders as native
+automation triggers, brightness as a light entity, icons/images as
+services), instead of the config-file-driven bridge described above.
+
+**Why two pieces**: Home Assistant OS only grants raw USB/HID access to
+add-on containers (via their `usb`/`udev` options) — Core's own container
+doesn't get that for arbitrary hardware. So `addon/akp05_bridge/` is the
+only thing that ever talks to the device (it runs the same protocol code
+as everything else here, plus a new Linux hidraw backend added to
+`akp05_device.py`), and `custom_components/akp05/` is what you actually
+see and interact with in HA, talking to the add-on over a small local
+HTTP+WebSocket API.
+
+### Install the add-on
+
+Easiest path — push this repo to GitHub, then click (opens *your own* HA
+UI via the My Home Assistant redirect, not anything hosted here):
+
+[![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fzeccola%2Fajazz-akp05%23homeassistant)
+
+Points at the `homeassistant` branch. That fills in
+Settings → Add-ons → Add-on Store → Repositories for you —
+click **Add**, then find "AKP05 Bridge" in the store. Full instructions,
+including a manual/no-GitHub-push fallback via Samba/SSH, are in
+[`addon/akp05_bridge/README.md`](addon/akp05_bridge/README.md). Short
+version once the repository's added:
+
+1. Settings → Add-ons → Add-on Store → ⋮ (top-right) → Check for updates.
+   "AKP05 Bridge" should now appear.
+2. Install it, open its **Configuration** tab, set `api_token` to any
+   random string (this is what the integration authenticates with —
+   there's no other access control on the API, since it needs to be
+   reachable from Core), then **Start** it.
+3. Check its **Log** tab for a line confirming the device was found — if
+   not, see Troubleshooting below.
+
+### Install the integration
+
+1. Copy `custom_components/akp05/` into `/config/custom_components/` on
+   the HA host, then restart Core.
+2. Settings → Devices & Services → Add Integration → search "Ajazz
+   AKP05".
+3. Enter the add-on's host (the HA host's own IP, or
+   `homeassistant.local`, both work since the add-on's port is published
+   on the host), port `8000`, and the `api_token` from above.
+4. An "AKP05" device should appear with a Brightness entity.
+
+### Using it
+
+- **Buttons/encoders as triggers** — in an automation: Add Trigger →
+  Device → AKP05 → e.g. "Button 3 pressed" or "Encoder 1 turned CW". If
+  these don't show up (`device_trigger.py` is the part of this
+  integration most sensitive to the exact HA Core version — see its
+  module docstring), the fallback that always works regardless is an
+  **Event** trigger with event type `akp05_event` and event data
+  `{"type": "pressed", "subtype": "button_3"}` (see `device_trigger.py`'s
+  `TRIGGERS` list for the full type/subtype vocabulary).
+- **Brightness** — a normal light entity. Turning it off dims to 0%
+  *without* touching any images, unlike the CLI's `off` (which also
+  wipes everything) — see `light.py`'s docstring for why that was changed.
+- **Icons/images** — services `akp05.set_button_icon` (any MDI icon name,
+  optionally colored by on/off state, same rendering as
+  `akp05_icons.py`), `akp05.set_button_image` (raw base64 image),
+  `akp05.clear_button`, and `akp05.clear_all` (the destructive
+  brightness-0-and-wipe-everything action — kept as an explicit service
+  rather than tied to the light's off switch).
+
+### Troubleshooting
+
+- **No device found, in the add-on log**: a USB passthrough issue — if
+  HA OS is itself a VM (Proxmox/ESXi/etc.), the AKP05 needs to be passed
+  through to that VM first; the add-on's `usb`/`udev` options only help
+  once the host OS can already see the device.
+- **Buttons don't register, or the wrong ones fire**: the Linux hidraw
+  backend's byte offsets (`KEY_IDX`/`STATE_IDX` in `akp05_device.py`)
+  are inferred from the hidraw no-report-ID convention, not yet
+  confirmed against real hardware — check the add-on log for raw report
+  bytes against what you actually pressed.
 
 ## Key facts about the protocol
 

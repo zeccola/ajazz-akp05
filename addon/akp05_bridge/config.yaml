@@ -1,0 +1,28 @@
+name: "AKP05 Bridge"
+version: "0.1.0"
+slug: "akp05_bridge"
+description: >-
+  USB bridge for the Ajazz AKP05 macro pad. Owns the raw HID connection
+  (the only thing on the HA OS host that can) and exposes button/encoder
+  events plus image/brightness control over a local HTTP+WebSocket API,
+  for the AKP05 Home Assistant integration to talk to.
+url: "https://github.com/zeccola/ajazz-akp05"
+arch:
+  - aarch64
+  - amd64
+  - armv7
+  - armhf
+  - i386
+startup: services
+boot: auto
+init: false
+usb: true
+udev: true
+ports:
+  8000/tcp: 8000
+ports_description:
+  8000/tcp: "AKP05 bridge API (HTTP + WebSocket) -- used by the AKP05 integration, not meant to be browsed directly"
+options:
+  api_token: ""
+schema:
+  api_token: "str"
