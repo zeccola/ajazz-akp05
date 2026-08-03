@@ -54,6 +54,23 @@ crate (github.com/4ndv/mirajazz) and the `opendeck-akp05` OpenDeck plugin
       Encoder 4: press 0x36, twist 0x70 (CCW) / 0x71 (CW)
   - The touch strip's own input events (touch/swipe) haven't been
     captured yet.
+  - The device needs a periodic keepalive or it drops the connection
+    after roughly 15 seconds (screen blanks, input reporting stops until
+    a button press partially wakes it, but state/images are lost) --
+    confirmed by checking both reference implementations, since this
+    project's own testing hit exactly that symptom: mirajazz's
+    `Device::keep_alive()` re-sends the minimal wake sequence (DIS +
+    LIG) plus a `"CONNECT"` command (7 letters, not the usual 3 --
+    `crt_command` below handles that), and opendeck-akp05's
+    `keepalive_task` calls it on a 10-second timer for the life of the
+    connection, concurrently with reading input. `open_device()` below
+    does the same, transparently, for every caller -- including the
+    one-shot scripts (set_image etc.), not just the long-running ones,
+    since e.g. "all buttons" or a strip upload can run long enough to
+    risk it too. A per-device write lock (also set up there) keeps the
+    keepalive's own writes from interleaving with an in-progress
+    multi-packet image upload, which has no per-chunk framing of its own
+    to survive that.
 
 Platform support: Windows uses `pywinusb` (wraps the native HID API, which
 always wants a leading report-ID byte even though this device has no real
@@ -118,10 +135,18 @@ def save_strip_canvas(img):
 
 
 def crt_command(command: str, payload: list[int], total_len: int) -> list[int]:
+    """Every command so far has been 3 letters (DIS/LIG/CLE/STP/BAT), but
+    the keepalive's "CONNECT" is 7 -- so this places the payload right
+    after wherever the command word actually ends, instead of the fixed
+    offset 9 a 3-letter-only version would hardcode (which would have
+    silently corrupted the buffer length for anything longer, since
+    Python list-slice assignment resizes to fit)."""
     buf = [0] * total_len
     buf[1:4] = [ord(c) for c in "CRT"]
-    buf[6:9] = [ord(c) for c in command]
-    buf[9 : 9 + len(payload)] = payload
+    cmd_bytes = [ord(c) for c in command]
+    buf[6 : 6 + len(cmd_bytes)] = cmd_bytes
+    payload_start = 6 + len(cmd_bytes)
+    buf[payload_start : payload_start + len(payload)] = payload
     return buf
 
 
@@ -132,6 +157,13 @@ def minimal_init_sequence(total_len: int) -> list[list[int]]:
         crt_command("DIS", [], total_len),
         crt_command("LIG", [0x00, 0x00], total_len),
     ]
+
+
+KEEPALIVE_INTERVAL = 10  # seconds -- matches opendeck-akp05's keepalive_task
+
+
+def keep_alive_command(total_len: int) -> list[int]:
+    return crt_command("CONNECT", [], total_len)
 
 
 def build_init_sequence(total_len: int) -> list[list[int]]:
@@ -216,7 +248,13 @@ def open_device(raw_data_handler=None):
     (pass None if you're only sending commands). Sends no init commands
     at all -- caller is responsible for that. Returns the open device
     (pywinusb on Windows, LinuxHidDevice on Linux); caller must call
-    .close() when done."""
+    .close() when done.
+
+    Every caller gets a background keepalive (see module docstring) and
+    a write lock from here -- not just connect() -- since even the
+    one-shot scripts (set_image, set_brightness, ...) are long enough in
+    the "all buttons"/strip case to risk the same ~15s drop, and it
+    costs nothing when they finish well under that."""
     if IS_WINDOWS:
         devices = hid.HidDeviceFilter(vendor_id=VENDOR_ID, product_id=PRODUCT_ID).get_devices()
         if not devices:
@@ -225,21 +263,30 @@ def open_device(raw_data_handler=None):
         device = devices[0]
         device.open()
         device.set_raw_data_handler(raw_data_handler or (lambda data: None))
-        return device
+    else:
+        path = _find_hidraw_path(VENDOR_ID, PRODUCT_ID)
+        if path is None:
+            print(f"No hidraw device found for VID_{VENDOR_ID:04X} & PID_{PRODUCT_ID:04X}.")
+            sys.exit(1)
+        device = LinuxHidDevice(path)
+        device.set_raw_data_handler(raw_data_handler or (lambda data: None))
 
-    path = _find_hidraw_path(VENDOR_ID, PRODUCT_ID)
-    if path is None:
-        print(f"No hidraw device found for VID_{VENDOR_ID:04X} & PID_{PRODUCT_ID:04X}.")
-        sys.exit(1)
-    device = LinuxHidDevice(path)
-    device.set_raw_data_handler(raw_data_handler or (lambda data: None))
+    out_len = device.hid_caps.output_report_byte_length
+    device._write_lock = threading.Lock()
+    _start_keepalive(device, out_len)
     return device
 
 
 def send_commands(device, buffers):
-    for buf in buffers:
-        device.send_output_report(buf)
-        time.sleep(0.05)
+    """Holds the device's write lock for the whole batch, not just each
+    individual write -- a multi-packet sequence like an image upload's
+    raw JPEG chunks has no per-chunk framing, so if the keepalive
+    thread's own commands interleaved between chunks (each write on its
+    own would still leave that gap), it would corrupt the upload."""
+    with device._write_lock:
+        for buf in buffers:
+            device.send_output_report(buf)
+            time.sleep(0.05)
 
 
 def encode_image(image_or_path, size, rotate180: bool = True) -> bytes:
@@ -294,12 +341,39 @@ def upload_image(device, wire_key: int, jpeg_bytes: bytes):
     send_commands(device, [crt_command("STP", [], out_len)])
 
 
+def _keepalive_loop(device, out_len: int, stop_event: threading.Event):
+    while not stop_event.wait(KEEPALIVE_INTERVAL):
+        try:
+            send_commands(device, minimal_init_sequence(out_len) + [keep_alive_command(out_len)])
+        except Exception:
+            return  # device is gone -- whatever's reading input reports will notice too
+
+
+def _start_keepalive(device, out_len: int):
+    """Runs for the life of the connection -- without this the device
+    drops its own connection after ~15s (see module docstring). Wraps
+    device.close() so callers don't need to know this thread exists;
+    every existing `device.close()` call site already stops it for free."""
+    stop_event = threading.Event()
+    thread = threading.Thread(target=_keepalive_loop, args=(device, out_len, stop_event), daemon=True)
+    thread.start()
+
+    original_close = device.close
+
+    def close_and_stop_keepalive():
+        stop_event.set()
+        original_close()
+
+    device.close = close_and_stop_keepalive
+
+
 def connect(raw_data_handler=None, full_init: bool = True):
-    """open_device() plus the init sequence. Set full_init=False to send
-    only the minimal wake-up sequence, leaving brightness and existing
-    key images untouched -- note this path is unverified on real
-    hardware; the full sequence is what's actually been confirmed to
-    unlock the device."""
+    """open_device() (which already starts the background keepalive --
+    see its docstring) plus the init sequence. Set full_init=False to
+    send only the minimal wake-up sequence, leaving brightness and
+    existing key images untouched -- note this path is unverified on
+    real hardware; the full sequence is what's actually been confirmed
+    to unlock the device."""
     device = open_device(raw_data_handler)
     out_len = device.hid_caps.output_report_byte_length
     sequence = build_init_sequence(out_len) if full_init else minimal_init_sequence(out_len)

@@ -23,15 +23,23 @@ What gets published:
     total). Each is a real entity (Settings -> Devices & Services ->
     MQTT -> Ajazz AKP05), and its presses are usable as automation
     triggers the standard way (Add Trigger -> Entity -> When an event
-    occurs). Was originally device_automation triggers (device-only,
-    no entities) instead -- those produced zero visible triggers with
-    no validation error logged anywhere, so this uses the same
-    discovery code path already confirmed working for the light.
+    occurs). This was tried first as the *only* mechanism for buttons
+    (as device_automation triggers, device-only, no entities) -- that
+    produced zero visible triggers with no validation error logged
+    anywhere, so entities are the one actually confirmed working, via
+    the same discovery code path already confirmed for the light.
+  - homeassistant/device_automation/akp05/<id>/config (retained) --
+    published *in addition* to the event entities above, purely so the
+    same presses also show up under Add Trigger -> Device -> Ajazz
+    AKP05, for whoever prefers that picker. Redundant with the event
+    entities, not required for anything to work.
   - akp05/status -- retained "online"/"offline" (MQTT last-will), used
     as every entity's availability topic.
-  - akp05/event/<id> -- NOT retained (a stateless press shouldn't replay
-    on every restart), JSON {"event_type": "pressed"} etc., one per
-    entity above.
+  - akp05/event/<id> -- NOT retained, JSON {"event_type": "pressed"}
+    etc., one topic per event entity above.
+  - akp05/event -- NOT retained, plain "<event_type>:<object_id>", feeds
+    only the device_automation triggers (which match a raw payload
+    string, not a JSON field, hence the separate topic/format).
 
 What it subscribes to:
   - akp05/power/set, akp05/brightness/set -- the light entity's own
@@ -72,6 +80,11 @@ OPTIONS_PATH = "/data/options.json"
 DEVICE_ID = "akp05"
 
 STATUS_TOPIC = f"{DEVICE_ID}/status"
+# Plain "event_type:object_id" on one shared topic, used only by the
+# device_automation triggers below -- separate from the per-entity JSON
+# topics event entities use, since MQTT device triggers match on a raw
+# payload string, not a JSON field.
+TRIGGER_EVENT_TOPIC = f"{DEVICE_ID}/event"
 POWER_SET_TOPIC = f"{DEVICE_ID}/power/set"
 POWER_STATE_TOPIC = f"{DEVICE_ID}/power/state"
 BRIGHTNESS_SET_TOPIC = f"{DEVICE_ID}/brightness/set"
@@ -175,6 +188,17 @@ def _event_discovery_payload(object_id: str, event_types: list, device_class: st
     return payload
 
 
+def _trigger_discovery_payload(object_id: str, event_type: str) -> dict:
+    return {
+        "automation_type": "trigger",
+        "type": event_type,
+        "subtype": object_id,
+        "topic": TRIGGER_EVENT_TOPIC,
+        "payload": f"{event_type}:{object_id}",
+        "device": DEVICE_INFO,
+    }
+
+
 def publish_discovery(client: mqtt.Client):
     client.publish(
         f"{DISCOVERY_PREFIX}/light/{DEVICE_ID}/brightness/config",
@@ -187,6 +211,19 @@ def publish_discovery(client: mqtt.Client):
             json.dumps(_event_discovery_payload(object_id, event_types, device_class)),
             retain=True,
         )
+        # Also publish a device-only trigger for the same event -- shows
+        # up under Add Trigger -> Device instead of -> Entity. Tried
+        # first as the *only* mechanism; it silently produced zero
+        # usable triggers with no validation error logged anywhere, so
+        # the event entities above are the one actually confirmed
+        # working, and this is now just an additional, redundant path
+        # kept because it's a nicer picker for some people.
+        for event_type in event_types:
+            client.publish(
+                f"{DISCOVERY_PREFIX}/device_automation/{DEVICE_ID}/{event_type}_{object_id}/config",
+                json.dumps(_trigger_discovery_payload(object_id, event_type)),
+                retain=True,
+            )
 
 
 class Bridge:
@@ -283,9 +320,10 @@ class Bridge:
             return
         object_id, event_type = self._classify(key, state)
         if object_id:
-            # Not retained -- a stateless press shouldn't replay itself
-            # to every future subscriber/on every HA restart.
+            # Neither retained -- a stateless press shouldn't replay
+            # itself to every future subscriber/on every HA restart.
             self.client.publish(_event_topic(object_id), json.dumps({"event_type": event_type}))
+            self.client.publish(TRIGGER_EVENT_TOPIC, f"{event_type}:{object_id}")
 
 
 bridge_holder: dict = {}

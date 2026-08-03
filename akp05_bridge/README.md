@@ -82,6 +82,14 @@ automatically once an MQTT broker add-on is running, no setup needed.
      permissions Supervisor's `udev: true` grants against real AKP05
      hardware yet — if you hit this, it needs a udev rule added to the
      add-on, not a config change on your end.
+   - **Screen goes black / device seems to stop responding after ~15
+     seconds, entities go unavailable** — this was a real bug (fixed):
+     the device drops its connection if it doesn't hear from the host
+     periodically. Confirmed against both reference implementations
+     (mirajazz, opendeck-akp05), which send a keepalive every 10 seconds
+     for exactly this reason — `akp05_device.py`'s `connect()` now does
+     the same automatically. If you still see this on a version that
+     includes that fix, it's a new bug, not the same one.
 3. In Home Assistant: **Settings → Devices & Services → MQTT** — an
    "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
    "Add Integration" step needed) with a **Brightness** entity plus 18
@@ -90,14 +98,18 @@ automatically once an MQTT broker add-on is running, no setup needed.
 
 ## Using it
 
-- **Buttons/encoders as triggers** — each button/encoder is a real MQTT
-  `event` entity, so in an automation: Add Trigger → Entity → **When an
-  event occurs** → pick e.g. "Button 3" → event type `pressed` or
-  `released` (encoders' twist entities use `cw`/`ccw` instead). (An
-  earlier version of this used device-only `device_automation` triggers
-  instead — those silently produced zero usable triggers with no error
-  anywhere, so this switched to real entities, which go through the same
-  discovery code path already confirmed working for the light.)
+- **Buttons/encoders — two ways to trigger on them, both published:**
+  - Each button/encoder is a real MQTT `event` entity: Add Trigger →
+    Entity → **When an event occurs** → pick e.g. "Button 3" → event
+    type `pressed` or `released` (encoders' twist entities use
+    `cw`/`ccw` instead). This is the mechanism actually confirmed
+    working, since it uses the same discovery code path as the light.
+  - The same presses are *also* published as device-only
+    `device_automation` triggers, so Add Trigger → Device → **Ajazz
+    AKP05** works too if you prefer that picker. This was tried first as
+    the *only* mechanism and silently produced zero usable triggers with
+    no error logged anywhere — kept alongside the entities now since
+    it's harmless if it does work for you, but don't rely on it alone.
 - **Brightness** — the light entity. Turning it off sets brightness to
   0% only — it does **not** wipe button/strip images, unlike the CLI's
   `akp05_set_brightness.py off`. Deliberately kept separate (see
@@ -131,7 +143,8 @@ automatically once an MQTT broker add-on is running, no setup needed.
 | Topic                       | Direction | Payload                              |
 |------------------------------|-----------|---------------------------------------|
 | `akp05/status`               | publishes | `online` / `offline` (retained, LWT)  |
-| `akp05/event/<id>`           | publishes | `{"event_type": "pressed"}` etc., not retained. `<id>` is `button_1`..`button_10`, `encoder_1_button`..`encoder_4_button`, `encoder_1`..`encoder_4` (twist) |
+| `akp05/event/<id>`           | publishes | `{"event_type": "pressed"}` etc., not retained. `<id>` is `button_1`..`button_10`, `encoder_1_button`..`encoder_4_button`, `encoder_1`..`encoder_4` (twist). Feeds the event entities. |
+| `akp05/event`                | publishes | `<event_type>:<id>`, not retained. Feeds only the device_automation triggers (raw payload match, not JSON). |
 | `akp05/power/set`            | subscribes| `ON` / `OFF`                          |
 | `akp05/power/state`          | publishes | `ON` / `OFF` (retained)               |
 | `akp05/brightness/set`       | subscribes| `0`-`100`                             |
