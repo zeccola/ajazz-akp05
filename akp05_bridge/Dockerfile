@@ -13,6 +13,6 @@ RUN apk add --no-cache --virtual .build-deps build-base jpeg-dev zlib-dev freety
     && pip install --no-cache-dir -r requirements.txt \
     && apk del .build-deps
 
-COPY server.py akp05_device.py akp05_icons.py ./
+COPY run.py akp05_device.py akp05_icons.py ./
 
-CMD [ "python3", "/app/server.py" ]
+CMD [ "python3", "/app/run.py" ]
