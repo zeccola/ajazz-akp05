@@ -33,6 +33,16 @@ What gets published:
     same presses also show up under Add Trigger -> Device -> Ajazz
     AKP05, for whoever prefers that picker. Redundant with the event
     entities, not required for anything to work.
+  - homeassistant/text/akp05/button_<n>_icon/config (retained) -- one
+    MQTT `text` entity per button (1-10, the only ones with a screen --
+    encoders don't have one). Type any Material Design Icons name
+    straight into it in the HA UI (e.g. "floor-lamp-outline") and it
+    renders via akp05_icons.build_icon and uploads, same as
+    akp05_set_image.py/the akp05/cmd set_icon action. No automation or
+    mqtt.publish needed for this one -- it's the direct answer to "let
+    me set the mdi from Home Assistant". An unrecognized name just
+    doesn't update (see akp05/button_<n>/icon/state below); MQTT text
+    entities have no other way to surface an error.
   - akp05/status -- retained "online"/"offline" (MQTT last-will), used
     as every entity's availability topic.
   - akp05/event/<id> -- NOT retained, JSON {"event_type": "pressed"}
@@ -40,14 +50,21 @@ What gets published:
   - akp05/event -- NOT retained, plain "<event_type>:<object_id>", feeds
     only the device_automation triggers (which match a raw payload
     string, not a JSON field, hence the separate topic/format).
+  - akp05/button_<n>/icon/state -- retained, echoes back the icon name
+    that's actually showing, but ONLY on a successful render -- an
+    invalid name is silently rejected rather than echoed, so the text
+    field just won't change to a value that didn't actually work.
 
 What it subscribes to:
   - akp05/power/set, akp05/brightness/set -- the light entity's own
     command topics ("ON"/"OFF" and "0".."100" respectively).
+  - akp05/button_<n>/icon/set -- the icon text entities' command topic;
+    empty string clears that button instead.
   - akp05/cmd -- JSON commands for things that don't map to a single
-    entity: icons, raw images, clearing. See the add-on's README for
-    the payload shapes; call these from automations with the
-    mqtt.publish service.
+    entity: raw images (there's no MQTT entity type for uploading a
+    file from the UI, so this stays automation/script-only), strip
+    images, clearing. See the add-on's README for the payload shapes;
+    call these from automations with the mqtt.publish service.
 """
 
 import base64
@@ -90,6 +107,19 @@ POWER_STATE_TOPIC = f"{DEVICE_ID}/power/state"
 BRIGHTNESS_SET_TOPIC = f"{DEVICE_ID}/brightness/set"
 BRIGHTNESS_STATE_TOPIC = f"{DEVICE_ID}/brightness/state"
 CMD_TOPIC = f"{DEVICE_ID}/cmd"
+
+
+def _icon_set_topic(button: int) -> str:
+    return f"{DEVICE_ID}/button_{button}/icon/set"
+
+
+def _icon_state_topic(button: int) -> str:
+    return f"{DEVICE_ID}/button_{button}/icon/state"
+
+
+# button -> its set-topic, for on_message's dispatch (only images have a
+# writable screen -- encoders don't, so this is buttons 1-10 only)
+ICON_SET_TOPICS = {_icon_set_topic(button): button for button in range(1, 11)}
 
 BUTTON_KEYS = set(range(1, 11))
 ENCODER_PRESS_KEYS = {0x37: 1, 0x35: 2, 0x33: 3, 0x36: 4}
@@ -199,12 +229,36 @@ def _trigger_discovery_payload(object_id: str, event_type: str) -> dict:
     }
 
 
+def _icon_discovery_payload(button: int) -> dict:
+    # MQTT `text` entity -- typing straight into this in the HA UI is
+    # the whole point (no automation/mqtt.publish JSON needed). Renders
+    # via akp05_icons.build_icon, same as akp05_set_image.py and the
+    # akp05/cmd set_icon action; an unrecognized MDI name just fails
+    # quietly here (logged, no state echo -- see on_message) since MQTT
+    # text entities have no error-surfacing mechanism of their own.
+    return {
+        "name": f"Button {button} Icon",
+        "unique_id": f"{DEVICE_ID}_button_{button}_icon",
+        "command_topic": _icon_set_topic(button),
+        "state_topic": _icon_state_topic(button),
+        "icon": "mdi:image-edit-outline",
+        "availability_topic": STATUS_TOPIC,
+        "device": DEVICE_INFO,
+    }
+
+
 def publish_discovery(client: mqtt.Client):
     client.publish(
         f"{DISCOVERY_PREFIX}/light/{DEVICE_ID}/brightness/config",
         json.dumps(_light_discovery_payload()),
         retain=True,
     )
+    for button in range(1, 11):
+        client.publish(
+            f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/button_{button}_icon/config",
+            json.dumps(_icon_discovery_payload(button)),
+            retain=True,
+        )
     for object_id, event_types, device_class in _event_entities():
         client.publish(
             f"{DISCOVERY_PREFIX}/event/{DEVICE_ID}/{object_id}/config",
@@ -379,6 +433,8 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     client.subscribe(POWER_SET_TOPIC)
     client.subscribe(BRIGHTNESS_SET_TOPIC)
     client.subscribe(CMD_TOPIC)
+    for topic in ICON_SET_TOPICS:
+        client.subscribe(topic)
     publish_discovery(client)
     client.publish(STATUS_TOPIC, "online", retain=True)
     bridge = bridge_holder.get("bridge")
@@ -395,6 +451,18 @@ def on_message(client, userdata, msg):
             bridge.set_brightness(int(msg.payload.decode()))
         elif msg.topic == CMD_TOPIC:
             _handle_cmd(bridge, json.loads(msg.payload.decode()))
+        elif msg.topic in ICON_SET_TOPICS:
+            button = ICON_SET_TOPICS[msg.topic]
+            icon = msg.payload.decode().strip()
+            if icon:
+                bridge.set_icon(button, icon, None)
+            else:
+                bridge.clear_button(button)
+            # Only echoed back on success -- an unrecognized MDI name
+            # raises inside set_icon (caught below), so the text field
+            # simply won't update to a name that didn't actually render,
+            # which is the only feedback an MQTT text entity can give.
+            client.publish(_icon_state_topic(button), icon, retain=True)
     except Exception as exc:  # noqa: BLE001 - a bad command shouldn't kill the bridge
         print(f"Error handling message on {msg.topic}: {exc}")
 

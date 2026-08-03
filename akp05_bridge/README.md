@@ -92,9 +92,9 @@ automatically once an MQTT broker add-on is running, no setup needed.
      includes that fix, it's a new bug, not the same one.
 3. In Home Assistant: **Settings → Devices & Services → MQTT** — an
    "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
-   "Add Integration" step needed) with a **Brightness** entity plus 18
-   event entities (one per button, encoder button, and encoder twist
-   pair).
+   "Add Integration" step needed) with a **Brightness** entity, 18 event
+   entities (one per button, encoder button, and encoder twist pair),
+   and 10 **Button N Icon** text entities.
 
 ## Using it
 
@@ -115,12 +115,26 @@ automatically once an MQTT broker add-on is running, no setup needed.
   `akp05_set_brightness.py off`. Deliberately kept separate (see
   `clear_all` below) so toggling this in a routine automation can't
   accidentally erase your icons.
-- **Icons/images/clearing** — there's no dedicated entity for these
-  (they're actions, not state), so they're plain MQTT commands. Call
+- **Setting a button's icon — directly in the UI, no automation needed**
+  — each button has a **Button N Icon** text entity (Settings → Devices
+  & Services → MQTT → Ajazz AKP05, or just search for it). Click it,
+  type any [Material Design Icons](https://pictogrammers.com/library/mdi/)
+  name (e.g. `floor-lamp-outline`), hit enter — it renders and uploads
+  immediately, gray (no on/off state tracked this way). Clear a button
+  by setting its text to empty. A name that doesn't exist just won't
+  take — check the add-on's **Log** tab if a button doesn't update,
+  that's the only place an invalid name gets reported.
+  For a version that's colored by an entity's actual on/off state (green
+  on / red off), automate it instead via `akp05/cmd`'s `set_icon` action
+  below, e.g. triggered on that entity's state changing.
+- **Raw images/clearing/strip** — no MQTT entity type exists for
+  uploading a file from the UI, so these stay plain MQTT commands. Call
   them from an automation with the built-in `mqtt.publish` service,
   topic `akp05/cmd`, JSON payload:
   ```yaml
   # render a Material Design Icon on a button, colored by on/off state
+  # (the Button N Icon text entities above call this same code path,
+  # just without the state coloring -- use this form when you want that)
   {"action": "set_icon", "button": 3, "icon": "floor-lamp-outline", "state": "on"}
 
   # raw base64 PNG/JPEG on a button
@@ -149,6 +163,8 @@ automatically once an MQTT broker add-on is running, no setup needed.
 | `akp05/power/state`          | publishes | `ON` / `OFF` (retained)               |
 | `akp05/brightness/set`       | subscribes| `0`-`100`                             |
 | `akp05/brightness/state`     | publishes | `0`-`100` (retained)                  |
+| `akp05/button_<n>/icon/set`  | subscribes| MDI icon name, e.g. `floor-lamp-outline`; empty clears the button. `<n>` is `1`-`10`. |
+| `akp05/button_<n>/icon/state`| publishes | Echoes the name back, retained, only on a successful render |
 | `akp05/cmd`                  | subscribes| JSON, see above                       |
 
 All of this is namespaced under `akp05/` and the MQTT discovery configs

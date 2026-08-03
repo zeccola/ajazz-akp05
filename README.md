@@ -218,10 +218,14 @@ An "Ajazz AKP05" device then appears under Settings → Devices & Services
 - **Brightness** — a normal light entity. Turning it off dims to 0%
   *without* touching any images, unlike the CLI's `off` (which also
   wipes everything).
-- **Icons/images/clearing** — plain MQTT commands (topic `akp05/cmd`),
-  called via the `mqtt.publish` service from an automation — see
-  [`akp05_bridge/README.md`](akp05_bridge/README.md#using-it) for the
-  exact payloads.
+- **Setting a button's icon** — directly in the UI: each button has a
+  **Button N Icon** text entity, type any [MDI](https://pictogrammers.com/library/mdi/)
+  name into it and it renders and uploads immediately, no automation
+  needed.
+- **Raw images/strip/clearing** — plain MQTT commands (topic
+  `akp05/cmd`), called via the `mqtt.publish` service from an automation
+  — see [`akp05_bridge/README.md`](akp05_bridge/README.md#using-it) for
+  the exact payloads.
 
 ### Troubleshooting
 
