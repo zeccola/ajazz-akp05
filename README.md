@@ -190,26 +190,21 @@ services), instead of the config-file-driven bridge described above.
 
 **Why two pieces**: Home Assistant OS only grants raw USB/HID access to
 add-on containers (via their `usb`/`udev` options) — Core's own container
-doesn't get that for arbitrary hardware. So `addon/akp05_bridge/` is the
-only thing that ever talks to the device (it runs the same protocol code
-as everything else here, plus a new Linux hidraw backend added to
+doesn't get that for arbitrary hardware. So `akp05_bridge/` is the only
+thing that ever talks to the device (it runs the same protocol code as
+everything else here, plus a new Linux hidraw backend added to
 `akp05_device.py`), and `custom_components/akp05/` is what you actually
 see and interact with in HA, talking to the add-on over a small local
 HTTP+WebSocket API.
 
 ### Install the add-on
 
-Easiest path — push this repo to GitHub, then click (opens *your own* HA
-UI via the My Home Assistant redirect, not anything hosted here):
-
-[![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fzeccola%2Fajazz-akp05%23homeassistant)
-
-Points at the `homeassistant` branch. That fills in
-Settings → Add-ons → Add-on Store → Repositories for you —
-click **Add**, then find "AKP05 Bridge" in the store. Full instructions,
-including a manual/no-GitHub-push fallback via Samba/SSH, are in
-[`addon/akp05_bridge/README.md`](addon/akp05_bridge/README.md). Short
-version once the repository's added:
+Push this repo to GitHub, then add it as an add-on repository:
+**Settings → Add-ons → Add-on Store → ⋮ (top-right) → Repositories**,
+paste `https://github.com/zeccola/ajazz-akp05`, **Add**. Full
+instructions, including a manual/no-GitHub-push fallback via Samba/SSH,
+are in [`akp05_bridge/README.md`](akp05_bridge/README.md). Short version
+once the repository's added:
 
 1. Settings → Add-ons → Add-on Store → ⋮ (top-right) → Check for updates.
    "AKP05 Bridge" should now appear.

@@ -3,8 +3,8 @@
 Owns the USB connection to the Ajazz AKP05 on your Home Assistant OS /
 Supervised host and exposes it over a local HTTP+WebSocket API. Pair it
 with the `custom_components/akp05` integration (see the repo root
-[README](../../README.md#running-natively-on-home-assistant-os)) to get
-the device as a real HA device with automation triggers and a brightness
+[README](../README.md#running-natively-on-home-assistant-os)) to get the
+device as a real HA device with automation triggers and a brightness
 entity — this add-on by itself doesn't do anything visible in HA.
 
 ## Prerequisites
@@ -25,27 +25,29 @@ place.
 This is the least fiddly if the repo's already on GitHub, and gives you
 "Check for updates" going forward instead of re-copying files.
 
-1. Push your changes to GitHub — `git push origin homeassistant`. Note:
-   Supervisor clones a repo's *default branch* (`main` here) unless the
-   URL names a different one, which is why the link below has
-   `#homeassistant` on the end — this add-on hasn't been merged to
-   `main` yet, pending real-hardware verification.
-2. Click this, from a browser on the same network as your HA instance
-   (it needs the **My Home Assistant** feature, on by default, and
-   opens *your own* HA UI, not anything hosted by this repo):
-
-   [![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fzeccola%2Fajazz-akp05%23homeassistant)
-
-   That opens Settings → Add-ons → Add-on Store → Repositories with the
-   URL already filled in — just click **Add**. If it doesn't work (e.g.
-   HA isn't reachable from wherever you're clicking it), add it by hand
-   instead: **Settings → Add-ons → Add-on Store → ⋮ (top right) →
-   Repositories**, paste `https://github.com/zeccola/ajazz-akp05#homeassistant`, Add.
+1. Push your changes to GitHub — `git push origin main`.
+2. **Settings → Add-ons → Add-on Store → ⋮ (top right) → Repositories**,
+   paste:
+   ```
+   https://github.com/zeccola/ajazz-akp05
+   ```
+   then **Add**.
 3. Close and reopen the Add-on Store. An "AKP05 Bridge" card should
-   appear (Supervisor scans the whole repo for folders containing a
-   `config.yaml`, so it finds `addon/akp05_bridge/` automatically —
-   no `repository.yaml` needed for a single add-on like this).
+   appear under **Ajazz AKP05** (the repo's display name, from
+   `repository.yaml` at the repo root).
 4. Click it, then **Install**.
+
+Two structural things Supervisor requires for a repo to be recognized as
+an add-on repository at all — both already set up here, worth knowing if
+you ever restructure this:
+- A `repository.yaml` at the **repo root** (not optional, despite some
+  docs implying otherwise for single-add-on repos).
+- Each add-on's `config.yaml` living **one level directly under the repo
+  root** (`akp05_bridge/config.yaml` here) — not nested inside an extra
+  wrapper folder. An earlier version of this add-on lived at
+  `addon/akp05_bridge/config.yaml`, one level too deep, and Supervisor
+  silently didn't find it (reported as "not a valid add-on repository"
+  regardless of branch).
 
 ### Option B — copy the folder directly as a local add-on
 
@@ -54,7 +56,7 @@ No GitHub push needed, good for testing changes before committing them.
 1. Get file access to the HA host: install the **Samba share** add-on
    (easiest from Windows — mounts `\\<host>\addons`) or the **SSH &
    Terminal**/**Terminal & SSH** add-on if you'd rather `scp`/`rsync`.
-2. Copy this whole `addon/akp05_bridge/` folder to the host at
+2. Copy this whole `akp05_bridge/` folder to the host at
    `/addons/local/akp05_bridge/` (the folder itself must contain
    `config.yaml` directly, not a nested subfolder).
 3. **Settings → Add-ons → Add-on Store → ⋮ → Check for updates**. An
@@ -108,15 +110,15 @@ the integration side.
 
 Once that works, install `custom_components/akp05/` and add the
 integration — see the root README's
-[Home Assistant OS section](../../README.md#running-natively-on-home-assistant-os)
+[Home Assistant OS section](../README.md#running-natively-on-home-assistant-os)
 for that part.
 
 ## Updating
 
 If you change `akp05_device.py` or `akp05_icons.py` at the repo root,
-run `python addon/akp05_bridge/sync_vendor.py` to copy the changes into
-this folder before rebuilding — Docker's build context is this folder
-only, so it can't reach the repo root copies directly (see
-`sync_vendor.py`'s docstring). Then reinstall/rebuild the add-on (Option
-A: push + "Check for updates" + Update; Option B: re-copy the folder +
-rebuild from the add-on's page).
+run `python akp05_bridge/sync_vendor.py` to copy the changes into this
+folder before rebuilding — Docker's build context is this folder only,
+so it can't reach the repo root copies directly (see `sync_vendor.py`'s
+docstring). Then reinstall/rebuild the add-on (Option A: push + "Check
+for updates" + Update; Option B: re-copy the folder + rebuild from the
+add-on's page).

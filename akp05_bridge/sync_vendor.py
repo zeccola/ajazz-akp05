@@ -6,13 +6,13 @@ the current version of it (and akp05_icons.py) in here before building.
 
 Run this any time either file changes at the repo root, before building
 the add-on image:
-    python addon/akp05_bridge/sync_vendor.py
+    python akp05_bridge/sync_vendor.py
 """
 
 import shutil
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent.parent
+ROOT = Path(__file__).resolve().parent.parent
 HERE = Path(__file__).resolve().parent
 
 FILES = ["akp05_device.py", "akp05_icons.py"]

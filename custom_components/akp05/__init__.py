@@ -1,6 +1,6 @@
 """The Ajazz AKP05 integration.
 
-Talks to the AKP05 Bridge add-on (addon/akp05_bridge/) over its local
+Talks to the AKP05 Bridge add-on (akp05_bridge/) over its local
 HTTP+WebSocket API -- this integration never touches USB/HID itself,
 since Home Assistant Core's own container doesn't get that access the
 way an add-on does.

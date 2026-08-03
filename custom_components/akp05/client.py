@@ -1,6 +1,6 @@
 """Client for the AKP05 bridge add-on's local HTTP+WebSocket API.
 
-The add-on (addon/akp05_bridge/server.py) is the only thing that touches
+The add-on (akp05_bridge/server.py) is the only thing that touches
 the USB device -- this just talks to its API over the LAN/localhost.
 """
 
