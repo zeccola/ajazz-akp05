@@ -1,117 +1,132 @@
 # AKP05 Bridge (Home Assistant add-on)
 
 Owns the USB connection to the Ajazz AKP05 on your Home Assistant OS /
-Supervised host and exposes it over a local HTTP+WebSocket API. Pair it
-with the `custom_components/akp05` integration (see the repo root
-[README](../README.md#running-natively-on-home-assistant-os)) to get the
-device as a real HA device with automation triggers and a brightness
-entity — this add-on by itself doesn't do anything visible in HA.
+Supervised host and exposes it to Home Assistant purely via **MQTT
+discovery** — buttons/encoders become native automation triggers,
+brightness becomes a light entity, all automatically. This is the only
+component you need to install; there's no separate integration to copy
+into `/config/custom_components/`.
 
 ## Prerequisites
 
 - Home Assistant OS or Supervised (this needs Supervisor — it won't work
   on Home Assistant Container/Core-only installs).
-- The AKP05 physically reachable by that host. If HA OS is itself a VM
+- An MQTT broker add-on installed and running — e.g. the official
+  **Mosquitto broker** add-on — with the **MQTT** integration configured
+  in Home Assistant (Settings → Devices & Services → MQTT). If you
+  already use MQTT for anything else, this is already done.
+- The AKP05 physically reachable by the HA host. If HA OS is itself a VM
   (Proxmox, ESXi, etc.), pass the USB device through to the VM first —
   the add-on's USB access starts from what the host OS can already see.
 
 ## Installing it
 
-Pick whichever of these two you find easier — both end up in the same
-place.
-
 ### Option A — add this repo as an add-on repository (recommended)
 
-This is the least fiddly if the repo's already on GitHub, and gives you
-"Check for updates" going forward instead of re-copying files.
-
-1. Push your changes to GitHub — `git push origin main`.
+1. Push this repo to GitHub if you haven't.
 2. **Settings → Add-ons → Add-on Store → ⋮ (top right) → Repositories**,
-   paste:
-   ```
-   https://github.com/zeccola/ajazz-akp05
-   ```
-   then **Add**.
-3. Close and reopen the Add-on Store. An "AKP05 Bridge" card should
-   appear under **Ajazz AKP05** (the repo's display name, from
-   `repository.yaml` at the repo root).
+   paste `https://github.com/zeccola/ajazz-akp05`, **Add**.
+3. Close and reopen the Add-on Store — "AKP05 Bridge" should now appear
+   under **Ajazz AKP05**.
 4. Click it, then **Install**.
-
-Two structural things Supervisor requires for a repo to be recognized as
-an add-on repository at all — both already set up here, worth knowing if
-you ever restructure this:
-- A `repository.yaml` at the **repo root** (not optional, despite some
-  docs implying otherwise for single-add-on repos).
-- Each add-on's `config.yaml` living **one level directly under the repo
-  root** (`akp05_bridge/config.yaml` here) — not nested inside an extra
-  wrapper folder. An earlier version of this add-on lived at
-  `addon/akp05_bridge/config.yaml`, one level too deep, and Supervisor
-  silently didn't find it (reported as "not a valid add-on repository"
-  regardless of branch).
 
 ### Option B — copy the folder directly as a local add-on
 
-No GitHub push needed, good for testing changes before committing them.
+No GitHub push needed, good for testing changes before committing.
 
-1. Get file access to the HA host: install the **Samba share** add-on
-   (easiest from Windows — mounts `\\<host>\addons`) or the **SSH &
-   Terminal**/**Terminal & SSH** add-on if you'd rather `scp`/`rsync`.
-2. Copy this whole `akp05_bridge/` folder to the host at
-   `/addons/local/akp05_bridge/` (the folder itself must contain
-   `config.yaml` directly, not a nested subfolder).
-3. **Settings → Add-ons → Add-on Store → ⋮ → Check for updates**. An
-   "AKP05 Bridge" card should appear under **Local add-ons**.
+1. Get file access to the HA host: the **Samba share** add-on (mounts
+   `\\<host>\addons` from Windows) or **SSH & Terminal** if you'd rather
+   `scp`/`rsync`.
+2. Copy this whole `akp05_bridge/` folder to
+   `/addons/local/akp05_bridge/` on the host (the folder itself must
+   contain `config.yaml` directly).
+3. **Settings → Add-ons → Add-on Store → ⋮ → Check for updates** — "AKP05
+   Bridge" should appear under **Local add-ons**.
 4. Click it, then **Install**.
 
 Either way, the first install builds a Docker image on the host, which
-takes a few minutes — the progress log is visible while it builds.
+takes a few minutes.
 
 ## Configure and start
 
-1. Open the add-on's **Configuration** tab and set `api_token` to any
-   random string you make up (e.g. generate one with
-   `python -c "import secrets; print(secrets.token_hex(16))"`). This is
-   the only thing authenticating requests to its API, since it has to be
-   reachable from Home Assistant Core's container, not just localhost —
-   don't leave it blank. Save.
-2. Go to the **Info** tab and toggle **Start**. Optionally enable **Start
-   on boot** and **Watchdog** too, so it comes back automatically after
-   an HA restart or crash.
-3. Open the **Log** tab and confirm you see the device get found (no HID
-   errors). If it doesn't:
-   - Nothing shows up at all / immediate crash → check the log for a
-     Python traceback first, that'll usually name the problem directly.
+Nothing to configure by default — MQTT broker connection details (host,
+port, credentials) are injected automatically by Supervisor because this
+add-on declares `mqtt:need` in its `config.yaml`, as long as the
+Mosquitto (or other MQTT-providing) add-on is installed and running. The
+only option is `discovery_prefix` (default `homeassistant`), which you'd
+only ever need to change if you customized that setting in HA's own MQTT
+integration.
+
+1. **Info** tab → **Start**. Optionally enable **Start on boot** and
+   **Watchdog** so it recovers automatically.
+2. **Log** tab — confirm you see the device get found and "Connected to
+   MQTT broker". If not:
    - "No hidraw device found" → the container can't see the USB device.
-     Confirm the AKP05 shows up on the *host* itself first (this is the
-     VM-passthrough case mentioned above), then double check the add-on
-     still has `usb: true`/`udev: true` (Option A/B above should have
-     brought `config.yaml` over correctly — don't hand-edit these unless
-     you know you need to).
-   - Device found but a permission error opening `/dev/hidrawN` → a
-     udev-rule/permission mismatch inside the container. This project
-     hasn't had a chance to confirm the exact permissions Supervisor's
-     `udev: true` grants against real AKP05 hardware yet — if you hit
-     this, it needs a udev rule added to the add-on to fix, not a config
-     change on your end.
+     Confirm the AKP05 shows up on the *host* itself first (the
+     VM-passthrough case above), then confirm `usb`/`udev` are still
+     `true` in `config.yaml`.
+   - Stuck retrying the MQTT connection → check the MQTT broker add-on
+     is actually running, and that this add-on's `mqtt:need` service
+     dependency resolved (Supervisor should refuse to start it
+     otherwise, but a broker that crashes after startup can still cause
+     this).
+   - Device found, MQTT connected, but a permission error opening
+     `/dev/hidrawN` → a udev-rule/permission mismatch inside the
+     container. This project hasn't had a chance to confirm the exact
+     permissions Supervisor's `udev: true` grants against real AKP05
+     hardware yet — if you hit this, it needs a udev rule added to the
+     add-on, not a config change on your end.
+3. In Home Assistant: **Settings → Devices & Services → MQTT** — an
+   "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
+   "Add Integration" step needed) with a **Brightness** entity.
 
-## Verify the API before touching the integration
+## Using it
 
-From any machine on your LAN (replace host/token):
+- **Buttons/encoders as triggers** — in an automation: Add Trigger →
+  Device → **Ajazz AKP05** → e.g. "Button 3 pressed" or "Encoder 1
+  turned CW". These are published as MQTT device-automation discovery
+  (`homeassistant/device_automation/...`), the same mechanism many
+  Zigbee remotes use — no custom integration code involved.
+- **Brightness** — the light entity. Turning it off sets brightness to
+  0% only — it does **not** wipe button/strip images, unlike the CLI's
+  `akp05_set_brightness.py off`. Deliberately kept separate (see
+  `clear_all` below) so toggling this in a routine automation can't
+  accidentally erase your icons.
+- **Icons/images/clearing** — there's no dedicated entity for these
+  (they're actions, not state), so they're plain MQTT commands. Call
+  them from an automation with the built-in `mqtt.publish` service,
+  topic `akp05/cmd`, JSON payload:
+  ```yaml
+  # render a Material Design Icon on a button, colored by on/off state
+  {"action": "set_icon", "button": 3, "icon": "floor-lamp-outline", "state": "on"}
 
-```
-curl http://homeassistant.local:8000/status \
-  -H "Authorization: Bearer <your api_token>"
-```
+  # raw base64 PNG/JPEG on a button
+  {"action": "set_image", "button": 3, "image_b64": "..."}
 
-should return something like `{"connected": true, "brightness": 50}`.
-Confirming this works first makes it much easier to tell, if the
-integration setup step later fails, whether the problem is the add-on or
-the integration side.
+  # blank one button
+  {"action": "clear_button", "button": 3}
 
-Once that works, install `custom_components/akp05/` and add the
-integration — see the root README's
-[Home Assistant OS section](../README.md#running-natively-on-home-assistant-os)
-for that part.
+  # dim to 0% AND wipe every button/strip image -- destructive,
+  # images must be re-uploaded afterward
+  {"action": "clear_all"}
+
+  # whole touch strip (800x112, auto-resized) or one of its 200px chunks
+  {"action": "set_strip", "image_b64": "..."}
+  {"action": "set_strip_chunk", "chunk": 12, "image_b64": "..."}
+  ```
+
+## Topic reference
+
+| Topic                       | Direction | Payload                              |
+|------------------------------|-----------|---------------------------------------|
+| `akp05/status`               | publishes | `online` / `offline` (retained, LWT)  |
+| `akp05/event`                | publishes | `<type>:<subtype>`, e.g. `pressed:button_3`, `cw:encoder_1` |
+| `akp05/brightness/set`       | subscribes| `0`-`100`                             |
+| `akp05/brightness/state`     | publishes | `0`-`100` (retained)                  |
+| `akp05/cmd`                  | subscribes| JSON, see above                       |
+
+All of this is namespaced under `akp05/` and the MQTT discovery configs
+under `<discovery_prefix>/`; nothing else on your broker is touched.
 
 ## Updating
 

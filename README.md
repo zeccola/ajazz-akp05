@@ -183,68 +183,44 @@ real HA device with native automation triggers rather than a config file.
 
 If your HA install is Home Assistant OS (or Supervised) and the AKP05 is
 plugged straight into that host, you don't need a separate always-on
-Windows PC at all — a Supervisor add-on plus a matching custom
-integration expose it as a real HA device (buttons/encoders as native
-automation triggers, brightness as a light entity, icons/images as
-services), instead of the config-file-driven bridge described above.
+Windows PC at all — a single Supervisor add-on exposes it as a real HA
+device (buttons/encoders as native automation triggers, brightness as a
+light entity) via **MQTT discovery**, instead of the config-file-driven
+bridge described above. Requires an MQTT broker (e.g. the official
+Mosquitto add-on) — no separate integration to install.
 
-**Why two pieces**: Home Assistant OS only grants raw USB/HID access to
-add-on containers (via their `usb`/`udev` options) — Core's own container
-doesn't get that for arbitrary hardware. So `akp05_bridge/` is the only
-thing that ever talks to the device (it runs the same protocol code as
-everything else here, plus a new Linux hidraw backend added to
-`akp05_device.py`), and `custom_components/akp05/` is what you actually
-see and interact with in HA, talking to the add-on over a small local
-HTTP+WebSocket API.
+**Why an add-on at all**: Home Assistant OS only grants raw USB/HID
+access to add-on containers (via their `usb`/`udev` options) — Core's own
+container doesn't get that for arbitrary hardware. `akp05_bridge/` is the
+only thing that ever talks to the device (it runs the same protocol code
+as everything else here, plus a new Linux hidraw backend added to
+`akp05_device.py`), and publishes everything to HA over MQTT rather than
+needing a matching custom integration on the Core side.
 
-### Install the add-on
+### Install
 
 Push this repo to GitHub, then add it as an add-on repository:
 **Settings → Add-ons → Add-on Store → ⋮ (top-right) → Repositories**,
-paste `https://github.com/zeccola/ajazz-akp05`, **Add**. Full
-instructions, including a manual/no-GitHub-push fallback via Samba/SSH,
-are in [`akp05_bridge/README.md`](akp05_bridge/README.md). Short version
-once the repository's added:
-
-1. Settings → Add-ons → Add-on Store → ⋮ (top-right) → Check for updates.
-   "AKP05 Bridge" should now appear.
-2. Install it, open its **Configuration** tab, set `api_token` to any
-   random string (this is what the integration authenticates with —
-   there's no other access control on the API, since it needs to be
-   reachable from Core), then **Start** it.
-3. Check its **Log** tab for a line confirming the device was found — if
-   not, see Troubleshooting below.
-
-### Install the integration
-
-1. Copy `custom_components/akp05/` into `/config/custom_components/` on
-   the HA host, then restart Core.
-2. Settings → Devices & Services → Add Integration → search "Ajazz
-   AKP05".
-3. Enter the add-on's host (the HA host's own IP, or
-   `homeassistant.local`, both work since the add-on's port is published
-   on the host), port `8000`, and the `api_token` from above.
-4. An "AKP05" device should appear with a Brightness entity.
+paste `https://github.com/zeccola/ajazz-akp05`, **Add**, then install
+"AKP05 Bridge" and **Start** it — full instructions, including a manual/
+no-GitHub-push fallback via Samba/SSH, are in
+[`akp05_bridge/README.md`](akp05_bridge/README.md). No configuration
+needed: MQTT broker credentials are injected automatically by Supervisor.
+An "Ajazz AKP05" device then appears under Settings → Devices & Services
+→ MQTT on its own — there's no "Add Integration" step.
 
 ### Using it
 
 - **Buttons/encoders as triggers** — in an automation: Add Trigger →
-  Device → AKP05 → e.g. "Button 3 pressed" or "Encoder 1 turned CW". If
-  these don't show up (`device_trigger.py` is the part of this
-  integration most sensitive to the exact HA Core version — see its
-  module docstring), the fallback that always works regardless is an
-  **Event** trigger with event type `akp05_event` and event data
-  `{"type": "pressed", "subtype": "button_3"}` (see `device_trigger.py`'s
-  `TRIGGERS` list for the full type/subtype vocabulary).
+  Device → **Ajazz AKP05** → e.g. "Button 3 pressed" or "Encoder 1
+  turned CW".
 - **Brightness** — a normal light entity. Turning it off dims to 0%
   *without* touching any images, unlike the CLI's `off` (which also
-  wipes everything) — see `light.py`'s docstring for why that was changed.
-- **Icons/images** — services `akp05.set_button_icon` (any MDI icon name,
-  optionally colored by on/off state, same rendering as
-  `akp05_icons.py`), `akp05.set_button_image` (raw base64 image),
-  `akp05.clear_button`, and `akp05.clear_all` (the destructive
-  brightness-0-and-wipe-everything action — kept as an explicit service
-  rather than tied to the light's off switch).
+  wipes everything).
+- **Icons/images/clearing** — plain MQTT commands (topic `akp05/cmd`),
+  called via the `mqtt.publish` service from an automation — see
+  [`akp05_bridge/README.md`](akp05_bridge/README.md#using-it) for the
+  exact payloads.
 
 ### Troubleshooting
 
@@ -257,6 +233,7 @@ once the repository's added:
   are inferred from the hidraw no-report-ID convention, not yet
   confirmed against real hardware — check the add-on log for raw report
   bytes against what you actually pressed.
+- More in [`akp05_bridge/README.md`](akp05_bridge/README.md#configure-and-start).
 
 ## Key facts about the protocol
 
