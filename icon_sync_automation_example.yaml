@@ -1,8 +1,3 @@
-# SUPERSEDED for the simple case: the add-on now has a built-in
-# "Button N Linked Entity" text entity per button that does exactly
-# this natively (no automation needed) -- see akp05_bridge/README.md.
-# Keep this automation only if you want something the built-in version
-# can't do (e.g. more than on/off-based coloring, multiple conditions).
 alias: Ajazz icon sync
 description: Colors each button's icon green/red to match its linked entity's on/off state
 triggers:

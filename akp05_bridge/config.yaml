@@ -1,12 +1,12 @@
 name: "AKP05 Bridge"
-version: "0.6.2"
+version: "0.7.0"
 slug: "akp05_bridge"
 description: >-
   USB bridge for the Ajazz AKP05 macro pad. Owns the raw HID connection
   (the only thing on the HA OS host that can) and exposes it to Home
   Assistant purely via MQTT discovery -- buttons/encoders as event
-  entities, brightness as a light entity, per-button icon and
-  linked-entity text entities, no separate integration to install.
+  entities, brightness as a light entity, per-button icon text
+  entities, no separate integration to install.
 url: "https://github.com/zeccola/ajazz-akp05"
 arch:
   - aarch64
@@ -19,14 +19,6 @@ boot: auto
 init: false
 usb: true
 udev: true
-# Grants a SUPERVISOR_TOKEN + reachability to HA's own Core API (REST +
-# WebSocket) -- needed only for the "Button N Linked Entity" text
-# entities, so this add-on can watch an arbitrary entity's state and
-# recolor a button's icon accordingly without a separate automation.
-# This is a real expansion of what the add-on can do beyond USB + MQTT
-# (read access to your entities' states); it's auto-provisioned the
-# same way the MQTT credentials are, no manual token needed.
-homeassistant_api: true
 services:
   - mqtt:want
 options:

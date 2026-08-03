@@ -3,23 +3,13 @@ AKP05 bridge add-on -- MQTT edition.
 
 Talks to the Ajazz AKP05 over raw HID (the only container on a Home
 Assistant OS host that can, via this add-on's usb/udev options) and
-exposes it to Home Assistant mainly through MQTT discovery -- no
+exposes it to Home Assistant purely through MQTT discovery -- no
 separate integration to install anywhere. Requires an MQTT broker
 (this add-on declares `mqtt:want` in config.yaml so Supervisor can
 auto-inject connection details, with mqtt_host/mqtt_username/
 mqtt_password options as a manual fallback -- that auto-injection has
 been seen not to work in some setups) and the MQTT integration
 configured in Home Assistant itself.
-
-Also reaches Home Assistant's own Core API directly (HAWatcher, below)
--- config.yaml's `homeassistant_api: true` auto-grants a SUPERVISOR_TOKEN
-for this, same idea as the MQTT auto-injection. This is only used to
-watch whichever entities are currently linked via the "Button N Linked
-Entity" text entities and recolor that button's icon on a state change,
-so a button can show a real entity's on/off state with no separate
-automation -- it's a real expansion of what this add-on can do beyond
-USB + MQTT (read access to entity states), worth knowing about even
-though it's narrowly used.
 
 What gets published:
   - homeassistant/light/akp05/brightness/config (retained) -- one light
@@ -53,14 +43,6 @@ What gets published:
     me set the mdi from Home Assistant". An unrecognized name just
     doesn't update (see akp05/button_<n>/icon/state below); MQTT text
     entities have no other way to surface an error.
-  - homeassistant/text/akp05/button_<n>_link/config (retained) -- a
-    second `text` entity per button: type an entity_id into it (e.g.
-    "light.bedroom_lights") and this button's icon (whatever's currently
-    set via the icon entity above, DEFAULT_ICON if nothing ever was)
-    gets recolored green/red to track that entity's on/off state, live,
-    via HAWatcher -- again no automation needed. Independent of the icon
-    entity, so typing into both for the same button means the next state
-    change just overwrites whatever the icon entity set; pick one.
   - akp05/status -- retained "online"/"offline" (MQTT last-will), used
     as every entity's availability topic.
   - akp05/event/<id> -- NOT retained, JSON {"event_type": "pressed"}
@@ -72,34 +54,36 @@ What gets published:
     that's actually showing, but ONLY on a successful render -- an
     invalid name is silently rejected rather than echoed, so the text
     field just won't change to a value that didn't actually work.
-  - akp05/button_<n>/link/state -- retained, echoes back the currently
-    linked entity_id (empty if none).
 
 What it subscribes to:
   - akp05/power/set, akp05/brightness/set -- the light entity's own
     command topics ("ON"/"OFF" and "0".."100" respectively).
   - akp05/button_<n>/icon/set -- the icon text entities' command topic;
     empty string clears that button instead.
-  - akp05/button_<n>/link/set -- the linked-entity text entities' command
-    topic; empty string unlinks.
   - akp05/cmd -- JSON commands for things that don't map to a single
     entity: raw images (there's no MQTT entity type for uploading a
     file from the UI, so this stays automation/script-only), strip
     images, clearing. See the add-on's README for the payload shapes;
     call these from automations with the mqtt.publish service.
+
+For syncing a button's icon to an entity's on/off state (green/red),
+use an automation triggered on that entity's state, calling the
+akp05/cmd set_icon action with the appropriate "state" -- see
+icon_sync_automation_example.yaml at the repo root. An earlier version
+of this add-on tried doing that in-process instead (a "linked entity"
+text entity per button, watched via Home Assistant's own Core API) --
+pulled back out since it needed a real Core API connection to debug
+and wasn't reliably confirmed working; the automation route is simpler
+and uses only the MQTT path already confirmed solid.
 """
 
 import base64
 import json
 import os
-import threading
 import time
-import urllib.error
-import urllib.request
 from io import BytesIO
 
 import paho.mqtt.client as mqtt
-import websocket
 from PIL import Image
 
 from akp05_device import (
@@ -148,20 +132,7 @@ def _icon_state_topic(button: int) -> str:
 # writable screen -- encoders don't, so this is buttons 1-10 only)
 ICON_SET_TOPICS = {_icon_set_topic(button): button for button in range(1, 11)}
 
-
-def _link_set_topic(button: int) -> str:
-    return f"{DEVICE_ID}/button_{button}/link/set"
-
-
-def _link_state_topic(button: int) -> str:
-    return f"{DEVICE_ID}/button_{button}/link/state"
-
-
-LINK_SET_TOPICS = {_link_set_topic(button): button for button in range(1, 11)}
-
-DEFAULT_ICON = "help-circle-outline"  # used if a button is linked before it's ever had an icon set
 ICONS_PATH = "/data/button_icons.json"
-LINKS_PATH = "/data/button_links.json"
 
 
 def _load_json(path: str, default):
@@ -177,6 +148,7 @@ def _load_json(path: str, default):
 def _save_json(path: str, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f)
+
 
 BUTTON_KEYS = set(range(1, 11))
 ENCODER_PRESS_KEYS = {0x37: 1, 0x35: 2, 0x33: 3, 0x36: 4}
@@ -304,27 +276,6 @@ def _icon_discovery_payload(button: int) -> dict:
     }
 
 
-def _link_discovery_payload(button: int) -> dict:
-    # A second MQTT `text` entity per button, alongside the icon one --
-    # type an entity_id into it (e.g. "light.bedroom_lights") and the
-    # add-on watches that entity via Home Assistant's own Core API
-    # (see HAWatcher) and recolors this button's icon green/red to match
-    # its on/off state, with no separate automation needed. Uses
-    # whatever icon name is currently set for the button (falls back to
-    # DEFAULT_ICON) -- these two entities are independent, so if you
-    # also type into the Icon entity later, it'll get overwritten back
-    # by the next state change; pick one or the other per button.
-    return {
-        "name": f"Button {button} Linked Entity",
-        "unique_id": f"{DEVICE_ID}_button_{button}_link",
-        "command_topic": _link_set_topic(button),
-        "state_topic": _link_state_topic(button),
-        "icon": "mdi:link-variant",
-        "availability_topic": STATUS_TOPIC,
-        "device": DEVICE_INFO,
-    }
-
-
 def publish_discovery(client: mqtt.Client):
     client.publish(
         f"{DISCOVERY_PREFIX}/light/{DEVICE_ID}/brightness/config",
@@ -335,11 +286,6 @@ def publish_discovery(client: mqtt.Client):
         client.publish(
             f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/button_{button}_icon/config",
             json.dumps(_icon_discovery_payload(button)),
-            retain=True,
-        )
-        client.publish(
-            f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/button_{button}_link/config",
-            json.dumps(_link_discovery_payload(button)),
             retain=True,
         )
     for object_id, event_types, device_class in _event_entities():
@@ -375,10 +321,8 @@ class Bridge:
         self.device = None
         self.brightness = 50
         self._last_nonzero_brightness = 50
-        # Persisted across restarts: last icon name set per button, and
-        # which entity (if any) each button's icon is linked to.
+        # Persisted across restarts: last icon name set per button.
         self.button_icons: dict[int, str] = {int(k): v for k, v in _load_json(ICONS_PATH, {}).items()}
-        self.button_links: dict[int, str] = {int(k): v for k, v in _load_json(LINKS_PATH, {}).items()}
 
     def connect_device(self):
         self.device = connect(self._on_report, full_init=True)
@@ -392,9 +336,7 @@ class Bridge:
         supposed to show, so restarting silently blanked them until the
         icon entity's value was changed again (which is the only thing
         that actually re-triggers set_icon). Re-render everything we
-        remember. Linked buttons render once here (gray, since we don't
-        know their entity's state synchronously) and get recolored
-        moments later once HAWatcher connects and calls sync_all()."""
+        remember."""
         for button, icon in list(self.button_icons.items()):
             try:
                 self.set_icon(button, icon, None)
@@ -460,20 +402,6 @@ class Bridge:
         self.button_icons[button] = icon
         _save_json(ICONS_PATH, self.button_icons)
 
-    def set_link(self, button: int, entity_id: str):
-        if entity_id:
-            self.button_links[button] = entity_id
-        else:
-            self.button_links.pop(button, None)
-        _save_json(LINKS_PATH, self.button_links)
-
-    def refresh_linked_icon(self, button: int, is_on: bool):
-        """Called by HAWatcher when a linked entity's state changes --
-        recolors using whatever icon is already set for this button
-        (DEFAULT_ICON if none ever was)."""
-        icon = self.button_icons.get(button, DEFAULT_ICON)
-        self.set_icon(button, icon, "on" if is_on else "off")
-
     @staticmethod
     def _classify(key: int, state: int):
         """Returns (object_id, event_type) matching _event_entities()."""
@@ -498,122 +426,6 @@ class Bridge:
             # itself to every future subscriber/on every HA restart.
             self.client.publish(_event_topic(object_id), json.dumps({"event_type": event_type}))
             self.client.publish(TRIGGER_EVENT_TOPIC, f"{event_type}:{object_id}")
-
-
-# Auto-injected once config.yaml's homeassistant_api: true is set --
-# same auto-provisioning idea as the MQTT broker credentials, no manual
-# long-lived access token needed.
-HA_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
-# Supervisor's documented proxy for an add-on's access to Core's own
-# WebSocket API when homeassistant_api: true is set. Hasn't actually
-# been exercised against a live instance yet -- if HAWatcher can't
-# connect, check the add-on log for the exact error first.
-HA_WS_URL = "ws://supervisor/core/websocket"
-HA_REST_BASE = "http://supervisor/core/api"
-
-
-class HAWatcher:
-    """Watches whichever entities are currently linked (Bridge.button_links)
-    via Home Assistant's own WebSocket API, so a button's icon can track
-    an arbitrary entity's on/off state with no separate automation --
-    just typing an entity_id into that button's "Linked Entity" text
-    entity. Runs on its own background thread; MQTT (Bridge) and this
-    are otherwise independent of each other."""
-
-    def __init__(self, bridge: Bridge):
-        self.bridge = bridge
-        self._next_id = 1
-        self._subscribe_id = None
-
-    def start(self):
-        if not HA_TOKEN:
-            print(
-                "No SUPERVISOR_TOKEN -- 'homeassistant_api: true' missing "
-                "from config.yaml? Linked-entity icon sync won't work "
-                "(icon/set text entities still will)."
-            )
-            return
-        print(f"Starting HA websocket watcher (token present, connecting to {HA_WS_URL})")
-        threading.Thread(target=self._run_forever, daemon=True).start()
-
-    def _run_forever(self):
-        while True:
-            try:
-                ws = websocket.WebSocketApp(
-                    HA_WS_URL,
-                    on_open=lambda _ws: print("HA websocket connection opened"),
-                    on_message=self._on_message,
-                    on_error=lambda _ws, err: print(f"HA websocket error: {err}"),
-                    on_close=lambda _ws, code, msg: print(f"HA websocket closed (code={code}, msg={msg})"),
-                )
-                ws.run_forever()
-            except Exception as exc:  # noqa: BLE001 - keep retrying regardless of why it dropped
-                print(f"HA websocket connection failed: {exc}")
-            time.sleep(5)
-
-    def _on_message(self, ws, message):
-        try:
-            data = json.loads(message)
-        except json.JSONDecodeError:
-            return
-        msg_type = data.get("type")
-        if msg_type == "auth_required":
-            ws.send(json.dumps({"type": "auth", "access_token": HA_TOKEN}))
-        elif msg_type == "auth_invalid":
-            print(f"HA websocket auth failed: {data.get('message')} -- check SUPERVISOR_TOKEN/homeassistant_api: true")
-        elif msg_type == "auth_ok":
-            print("HA websocket authenticated -- subscribing to state_changed")
-            self._next_id += 1
-            self._subscribe_id = self._next_id
-            ws.send(json.dumps({"id": self._subscribe_id, "type": "subscribe_events", "event_type": "state_changed"}))
-            self.sync_all()
-        elif msg_type == "result" and data.get("id") == self._subscribe_id:
-            if data.get("success"):
-                print("HA websocket subscribed to state_changed events successfully")
-            else:
-                print(f"HA websocket subscribe_events FAILED: {data.get('error')}")
-        elif msg_type == "event":
-            event = data.get("event", {})
-            if event.get("event_type") == "state_changed":
-                event_data = event.get("data", {})
-                new_state = event_data.get("new_state") or {}
-                entity_id = event_data.get("entity_id")
-                if entity_id in self.bridge.button_links.values():
-                    print(f"HA state_changed for linked entity {entity_id}: {new_state.get('state')}")
-                self._apply(entity_id, new_state.get("state"))
-
-    def _apply(self, entity_id: str, state: str):
-        for button, linked in list(self.bridge.button_links.items()):
-            if linked == entity_id:
-                try:
-                    self.bridge.refresh_linked_icon(button, state == "on")
-                except Exception as exc:  # noqa: BLE001 - one bad icon shouldn't stop the rest
-                    print(f"Couldn't refresh icon for button {button} ({entity_id}): {exc}")
-
-    def sync_one(self, button: int, entity_id: str):
-        """Fetches current state right away for a newly-set link, rather
-        than waiting for that entity's next change."""
-        if not HA_TOKEN:
-            print(f"Can't sync {entity_id} for button {button} -- no SUPERVISOR_TOKEN")
-            return
-        if not entity_id:
-            return
-        try:
-            req = urllib.request.Request(
-                f"{HA_REST_BASE}/states/{entity_id}", headers={"Authorization": f"Bearer {HA_TOKEN}"}
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                state = json.loads(resp.read())["state"]
-            print(f"Fetched {entity_id} state = {state!r} for button {button}")
-            self.bridge.refresh_linked_icon(button, state == "on")
-        except urllib.error.HTTPError as exc:
-            print(f"Couldn't fetch initial state for {entity_id}: HTTP {exc.code} {exc.reason}")
-        except (urllib.error.URLError, KeyError, ValueError, json.JSONDecodeError) as exc:
-            print(f"Couldn't fetch initial state for {entity_id}: {exc}")
-
-    def sync_all(self):
-        for button, entity_id in list(self.bridge.button_links.items()):
-            self.sync_one(button, entity_id)
 
 
 bridge_holder: dict = {}
@@ -671,8 +483,6 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     client.subscribe(CMD_TOPIC)
     for topic in ICON_SET_TOPICS:
         client.subscribe(topic)
-    for topic in LINK_SET_TOPICS:
-        client.subscribe(topic)
     publish_discovery(client)
     client.publish(STATUS_TOPIC, "online", retain=True)
     bridge = bridge_holder.get("bridge")
@@ -701,14 +511,6 @@ def on_message(client, userdata, msg):
             # simply won't update to a name that didn't actually render,
             # which is the only feedback an MQTT text entity can give.
             client.publish(_icon_state_topic(button), icon, retain=True)
-        elif msg.topic in LINK_SET_TOPICS:
-            button = LINK_SET_TOPICS[msg.topic]
-            entity_id = msg.payload.decode().strip()
-            bridge.set_link(button, entity_id)
-            client.publish(_link_state_topic(button), entity_id, retain=True)
-            ha_watcher = bridge_holder.get("ha_watcher")
-            if entity_id and ha_watcher is not None:
-                ha_watcher.sync_one(button, entity_id)
     except Exception as exc:  # noqa: BLE001 - a bad command shouldn't kill the bridge
         print(f"Error handling message on {msg.topic}: {exc}")
 
@@ -720,7 +522,7 @@ def _connect_device_with_retry(bridge: Bridge):
     """akp05_device.open_device() calls sys.exit(1) if the hidraw node
     isn't found yet -- fine for a one-shot CLI script, but for this
     long-running add-on that previously meant the *entire* process
-    (MQTT client, HAWatcher, everything) died and had to be restarted by
+    (MQTT client and everything) died and had to be restarted by
     Supervisor on every transient miss, e.g. the USB device not having
     finished re-enumerating yet right after a restart. Retry in-process
     instead of crash-looping the whole container over it."""
@@ -744,10 +546,6 @@ def main():
     bridge = Bridge(client)
     bridge_holder["bridge"] = bridge
     _connect_device_with_retry(bridge)
-
-    ha_watcher = HAWatcher(bridge)
-    bridge_holder["ha_watcher"] = ha_watcher
-    ha_watcher.start()
 
     # connect_async + loop_forever(retry_first_connection=True) instead
     # of a plain connect(): the mqtt:need service dependency should mean

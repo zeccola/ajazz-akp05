@@ -1,15 +1,11 @@
 # AKP05 Bridge (Home Assistant add-on)
 
 Owns the USB connection to the Ajazz AKP05 on your Home Assistant OS /
-Supervised host and exposes it to Home Assistant mainly via **MQTT
+Supervised host and exposes it to Home Assistant purely via **MQTT
 discovery** — buttons/encoders become native automation triggers,
 brightness becomes a light entity, all automatically. This is the only
 component you need to install; there's no separate integration to copy
-into `/config/custom_components/`. It also talks directly to Home
-Assistant's own Core API (`homeassistant_api: true`, auto-configured,
-nothing for you to set up) for exactly one thing: the "Button N Linked
-Entity" text entities, which watch an arbitrary entity's on/off state to
-recolor a button's icon — see **Using it** below.
+into `/config/custom_components/`.
 
 ## Prerequisites
 
@@ -78,11 +74,11 @@ automatically once an MQTT broker add-on is running, no setup needed.
      3. Save, **Restart** the add-on.
    - "Device not found yet, retrying in 5s..." repeating → the container
      can't see the USB device. This used to crash-loop the whole add-on
-     (killing MQTT/HAWatcher too) on every miss, including a transient
-     one right after a restart before USB re-enumerated — fixed to retry
-     in-process instead, but if it repeats forever, confirm the AKP05
-     shows up on the *host* itself first (the VM-passthrough case above),
-     then confirm `usb`/`udev` are still `true` in `config.yaml`.
+     on every miss, including a transient one right after a restart
+     before USB re-enumerated — fixed to retry in-process instead, but
+     if it repeats forever, confirm the AKP05 shows up on the *host*
+     itself first (the VM-passthrough case above), then confirm
+     `usb`/`udev` are still `true` in `config.yaml`.
    - Device found, MQTT connected, but a permission error opening
      `/dev/hidrawN` → a udev-rule/permission mismatch inside the
      container. This project hasn't had a chance to confirm the exact
@@ -103,31 +99,11 @@ automatically once an MQTT broker add-on is running, no setup needed.
      add-on restart), but nothing was re-uploading the remembered icons.
      `connect_device()` now re-renders every button it has a saved icon
      for immediately after connecting.
-   - **Linked entity set, but the icon never changes color** — check the
-     **Log** tab for lines starting "HA websocket" or "SUPERVISOR_TOKEN"
-     right after setting the link or restarting the add-on:
-     - "No SUPERVISOR_TOKEN" → `homeassistant_api: true` didn't take.
-       Try a full **uninstall and reinstall** of the add-on, not just an
-       update/restart — some Supervisor versions only (re-)grant new
-       permissions like this on a fresh install, not on every restart.
-     - "HA websocket auth failed" → the token exists but was rejected;
-       same fix as above.
-     - "subscribe_events FAILED: ..." → connected and authenticated fine,
-       but the event subscription itself was refused — the error message
-       logged here is the actual reason, not a guess.
-     - "Fetched \<entity\> state = ..." with nothing after it → the
-       one-time fetch works (so the token/permissions are fine) but the
-       live subscription isn't delivering events; likely a bug, worth
-       reporting with the surrounding log lines.
-     - Nothing at all logged → the watcher may not have started; confirm
-       you're on `0.6.1`+ and that the add-on actually restarted after
-       updating.
 3. In Home Assistant: **Settings → Devices & Services → MQTT** — an
    "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
    "Add Integration" step needed) with a **Brightness** entity, 18 event
    entities (one per button, encoder button, and encoder twist pair),
-   10 **Button N Icon** text entities, and 10 **Button N Linked Entity**
-   text entities.
+   and 10 **Button N Icon** text entities.
 
 ## Using it
 
@@ -157,20 +133,16 @@ automatically once an MQTT broker add-on is running, no setup needed.
   by setting its text to empty. A name that doesn't exist just won't
   take — check the add-on's **Log** tab if a button doesn't update,
   that's the only place an invalid name gets reported.
-- **Showing a linked entity's on/off state on the icon — also directly
-  in the UI** — each button *also* has a **Button N Linked Entity** text
-  entity. Type an entity_id into it (e.g. `light.bedroom_lights`,
-  `switch.tapo_p110m2`) and the button's icon (whatever you set via the
-  Icon entity above) turns green when that entity is on, red when off,
-  live, no automation needed — it stays in sync no matter what actually
-  changes the entity (this button, another automation, physically
-  flipping a switch, the app). Clear a button's link by setting its text
-  to empty. This needs `homeassistant_api: true` (already set in this
-  add-on's `config.yaml`, nothing for you to configure) — if it's not
-  working, check the **Log** tab for "No SUPERVISOR_TOKEN" or a
-  websocket error. **Pick one or the other per button** — if you also
-  type into that button's Icon entity afterward, the next state change
-  just overwrites it back.
+- **Coloring an icon by an entity's on/off state (green/red)** — not a
+  built-in entity here (that was tried — a "linked entity" text entity
+  per button watching Home Assistant's own Core API directly — and
+  pulled back out; it needed a whole separate API connection to debug
+  and wasn't reliably confirmed working). Use an automation instead,
+  triggered on the entity's state, calling the `akp05/cmd` `set_icon`
+  action below with the right `state` — see
+  `icon_sync_automation_example.yaml` at the repo root for a working
+  template. More moving parts than a single text entity, but it only
+  depends on the MQTT path already confirmed solid.
 - **Raw images/clearing/strip** — no MQTT entity type exists for
   uploading a file from the UI, so these stay plain MQTT commands. Call
   them from an automation with the built-in `mqtt.publish` service,
@@ -209,8 +181,6 @@ automatically once an MQTT broker add-on is running, no setup needed.
 | `akp05/brightness/state`     | publishes | `0`-`100` (retained)                  |
 | `akp05/button_<n>/icon/set`  | subscribes| MDI icon name, e.g. `floor-lamp-outline`; empty clears the button. `<n>` is `1`-`10`. |
 | `akp05/button_<n>/icon/state`| publishes | Echoes the name back, retained, only on a successful render |
-| `akp05/button_<n>/link/set`  | subscribes| An entity_id, e.g. `light.bedroom_lights`; empty unlinks. |
-| `akp05/button_<n>/link/state`| publishes | Echoes the entity_id back, retained         |
 | `akp05/cmd`                  | subscribes| JSON, see above                       |
 
 All of this is namespaced under `akp05/` and the MQTT discovery configs
