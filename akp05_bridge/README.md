@@ -94,6 +94,31 @@ automatically once an MQTT broker add-on is running, no setup needed.
      for exactly this reason — `akp05_device.py`'s `connect()` now does
      the same automatically. If you still see this on a version that
      includes that fix, it's a new bug, not the same one.
+   - **Icons don't show up after a restart until you clear and retype
+     the same MDI name** — this was also a real bug (fixed): the device
+     wipes every button's screen on every reconnect (including a plain
+     add-on restart), but nothing was re-uploading the remembered icons.
+     `connect_device()` now re-renders every button it has a saved icon
+     for immediately after connecting.
+   - **Linked entity set, but the icon never changes color** — check the
+     **Log** tab for lines starting "HA websocket" or "SUPERVISOR_TOKEN"
+     right after setting the link or restarting the add-on:
+     - "No SUPERVISOR_TOKEN" → `homeassistant_api: true` didn't take.
+       Try a full **uninstall and reinstall** of the add-on, not just an
+       update/restart — some Supervisor versions only (re-)grant new
+       permissions like this on a fresh install, not on every restart.
+     - "HA websocket auth failed" → the token exists but was rejected;
+       same fix as above.
+     - "subscribe_events FAILED: ..." → connected and authenticated fine,
+       but the event subscription itself was refused — the error message
+       logged here is the actual reason, not a guess.
+     - "Fetched \<entity\> state = ..." with nothing after it → the
+       one-time fetch works (so the token/permissions are fine) but the
+       live subscription isn't delivering events; likely a bug, worth
+       reporting with the surrounding log lines.
+     - Nothing at all logged → the watcher may not have started; confirm
+       you're on `0.6.1`+ and that the add-on actually restarted after
+       updating.
 3. In Home Assistant: **Settings → Devices & Services → MQTT** — an
    "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
    "Add Integration" step needed) with a **Brightness** entity, 18 event

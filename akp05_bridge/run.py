@@ -383,6 +383,23 @@ class Bridge:
     def connect_device(self):
         self.device = connect(self._on_report, full_init=True)
         self.publish_state()
+        self._restore_button_icons()
+
+    def _restore_button_icons(self):
+        """full_init wipes every button's screen (CLE) on every connect
+        -- including a plain add-on restart, not just a fresh install --
+        but nothing was re-uploading whatever icon each button is
+        supposed to show, so restarting silently blanked them until the
+        icon entity's value was changed again (which is the only thing
+        that actually re-triggers set_icon). Re-render everything we
+        remember. Linked buttons render once here (gray, since we don't
+        know their entity's state synchronously) and get recolored
+        moments later once HAWatcher connects and calls sync_all()."""
+        for button, icon in list(self.button_icons.items()):
+            try:
+                self.set_icon(button, icon, None)
+            except Exception as exc:  # noqa: BLE001 - one bad icon shouldn't block the rest
+                print(f"Couldn't restore icon for button {button} ({icon!r}): {exc}")
 
     def _out_len(self) -> int:
         return self.device.hid_caps.output_report_byte_length
@@ -506,6 +523,7 @@ class HAWatcher:
     def __init__(self, bridge: Bridge):
         self.bridge = bridge
         self._next_id = 1
+        self._subscribe_id = None
 
     def start(self):
         if not HA_TOKEN:
@@ -515,6 +533,7 @@ class HAWatcher:
                 "(icon/set text entities still will)."
             )
             return
+        print(f"Starting HA websocket watcher (token present, connecting to {HA_WS_URL})")
         threading.Thread(target=self._run_forever, daemon=True).start()
 
     def _run_forever(self):
@@ -522,8 +541,10 @@ class HAWatcher:
             try:
                 ws = websocket.WebSocketApp(
                     HA_WS_URL,
+                    on_open=lambda _ws: print("HA websocket connection opened"),
                     on_message=self._on_message,
                     on_error=lambda _ws, err: print(f"HA websocket error: {err}"),
+                    on_close=lambda _ws, code, msg: print(f"HA websocket closed (code={code}, msg={msg})"),
                 )
                 ws.run_forever()
             except Exception as exc:  # noqa: BLE001 - keep retrying regardless of why it dropped
@@ -539,17 +560,27 @@ class HAWatcher:
         if msg_type == "auth_required":
             ws.send(json.dumps({"type": "auth", "access_token": HA_TOKEN}))
         elif msg_type == "auth_invalid":
-            print(f"HA websocket auth failed: {data.get('message')}")
+            print(f"HA websocket auth failed: {data.get('message')} -- check SUPERVISOR_TOKEN/homeassistant_api: true")
         elif msg_type == "auth_ok":
+            print("HA websocket authenticated -- subscribing to state_changed")
             self._next_id += 1
-            ws.send(json.dumps({"id": self._next_id, "type": "subscribe_events", "event_type": "state_changed"}))
+            self._subscribe_id = self._next_id
+            ws.send(json.dumps({"id": self._subscribe_id, "type": "subscribe_events", "event_type": "state_changed"}))
             self.sync_all()
+        elif msg_type == "result" and data.get("id") == self._subscribe_id:
+            if data.get("success"):
+                print("HA websocket subscribed to state_changed events successfully")
+            else:
+                print(f"HA websocket subscribe_events FAILED: {data.get('error')}")
         elif msg_type == "event":
             event = data.get("event", {})
             if event.get("event_type") == "state_changed":
                 event_data = event.get("data", {})
                 new_state = event_data.get("new_state") or {}
-                self._apply(event_data.get("entity_id"), new_state.get("state"))
+                entity_id = event_data.get("entity_id")
+                if entity_id in self.bridge.button_links.values():
+                    print(f"HA state_changed for linked entity {entity_id}: {new_state.get('state')}")
+                self._apply(entity_id, new_state.get("state"))
 
     def _apply(self, entity_id: str, state: str):
         for button, linked in list(self.bridge.button_links.items()):
@@ -562,7 +593,10 @@ class HAWatcher:
     def sync_one(self, button: int, entity_id: str):
         """Fetches current state right away for a newly-set link, rather
         than waiting for that entity's next change."""
-        if not HA_TOKEN or not entity_id:
+        if not HA_TOKEN:
+            print(f"Can't sync {entity_id} for button {button} -- no SUPERVISOR_TOKEN")
+            return
+        if not entity_id:
             return
         try:
             req = urllib.request.Request(
@@ -570,7 +604,10 @@ class HAWatcher:
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 state = json.loads(resp.read())["state"]
+            print(f"Fetched {entity_id} state = {state!r} for button {button}")
             self.bridge.refresh_linked_icon(button, state == "on")
+        except urllib.error.HTTPError as exc:
+            print(f"Couldn't fetch initial state for {entity_id}: HTTP {exc.code} {exc.reason}")
         except (urllib.error.URLError, KeyError, ValueError, json.JSONDecodeError) as exc:
             print(f"Couldn't fetch initial state for {entity_id}: {exc}")
 
