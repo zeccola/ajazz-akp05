@@ -84,15 +84,20 @@ automatically once an MQTT broker add-on is running, no setup needed.
      add-on, not a config change on your end.
 3. In Home Assistant: **Settings → Devices & Services → MQTT** — an
    "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
-   "Add Integration" step needed) with a **Brightness** entity.
+   "Add Integration" step needed) with a **Brightness** entity plus 18
+   event entities (one per button, encoder button, and encoder twist
+   pair).
 
 ## Using it
 
-- **Buttons/encoders as triggers** — in an automation: Add Trigger →
-  Device → **Ajazz AKP05** → e.g. "Button 3 pressed" or "Encoder 1
-  turned CW". These are published as MQTT device-automation discovery
-  (`homeassistant/device_automation/...`), the same mechanism many
-  Zigbee remotes use — no custom integration code involved.
+- **Buttons/encoders as triggers** — each button/encoder is a real MQTT
+  `event` entity, so in an automation: Add Trigger → Entity → **When an
+  event occurs** → pick e.g. "Button 3" → event type `pressed` or
+  `released` (encoders' twist entities use `cw`/`ccw` instead). (An
+  earlier version of this used device-only `device_automation` triggers
+  instead — those silently produced zero usable triggers with no error
+  anywhere, so this switched to real entities, which go through the same
+  discovery code path already confirmed working for the light.)
 - **Brightness** — the light entity. Turning it off sets brightness to
   0% only — it does **not** wipe button/strip images, unlike the CLI's
   `akp05_set_brightness.py off`. Deliberately kept separate (see
@@ -126,7 +131,9 @@ automatically once an MQTT broker add-on is running, no setup needed.
 | Topic                       | Direction | Payload                              |
 |------------------------------|-----------|---------------------------------------|
 | `akp05/status`               | publishes | `online` / `offline` (retained, LWT)  |
-| `akp05/event`                | publishes | `<type>:<subtype>`, e.g. `pressed:button_3`, `cw:encoder_1` |
+| `akp05/event/<id>`           | publishes | `{"event_type": "pressed"}` etc., not retained. `<id>` is `button_1`..`button_10`, `encoder_1_button`..`encoder_4_button`, `encoder_1`..`encoder_4` (twist) |
+| `akp05/power/set`            | subscribes| `ON` / `OFF`                          |
+| `akp05/power/state`          | publishes | `ON` / `OFF` (retained)               |
 | `akp05/brightness/set`       | subscribes| `0`-`100`                             |
 | `akp05/brightness/state`     | publishes | `0`-`100` (retained)                  |
 | `akp05/cmd`                  | subscribes| JSON, see above                       |

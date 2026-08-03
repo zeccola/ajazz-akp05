@@ -211,9 +211,10 @@ An "Ajazz AKP05" device then appears under Settings → Devices & Services
 
 ### Using it
 
-- **Buttons/encoders as triggers** — in an automation: Add Trigger →
-  Device → **Ajazz AKP05** → e.g. "Button 3 pressed" or "Encoder 1
-  turned CW".
+- **Buttons/encoders** — each is a real MQTT `event` entity, so in an
+  automation: Add Trigger → Entity → **When an event occurs** → pick the
+  button/encoder → event type (`pressed`/`released`, or `cw`/`ccw` for
+  encoder twists).
 - **Brightness** — a normal light entity. Turning it off dims to 0%
   *without* touching any images, unlike the CLI's `off` (which also
   wipes everything).

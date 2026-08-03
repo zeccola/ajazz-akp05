@@ -4,34 +4,41 @@ AKP05 bridge add-on -- MQTT edition.
 Talks to the Ajazz AKP05 over raw HID (the only container on a Home
 Assistant OS host that can, via this add-on's usb/udev options) and
 exposes it to Home Assistant purely through MQTT discovery -- no
-separate integration to install anywhere. Requires an MQTT broker (this
-add-on declares `mqtt:need` in config.yaml, so Supervisor auto-injects
-connection details once e.g. the Mosquitto broker add-on is running) and
-the MQTT integration configured in Home Assistant itself.
+separate integration to install anywhere. Requires an MQTT broker
+(this add-on declares `mqtt:want` in config.yaml so Supervisor can
+auto-inject connection details, with mqtt_host/mqtt_username/
+mqtt_password options as a manual fallback -- that auto-injection has
+been seen not to work in some setups) and the MQTT integration
+configured in Home Assistant itself.
 
-What gets published (retained, so they survive an HA restart without
-needing this add-on to republish first):
-  - homeassistant/light/akp05/brightness/config -- one light entity for
-    panel brightness (buttons + strip together, same as the device's own
-    LIG command). Turning it off just sets brightness to 0 -- it does
-    NOT wipe button/strip images (see akp05/cmd's clear_all for that,
-    kept as an explicit action, never a side effect of the light).
-  - homeassistant/device_automation/akp05/<id>/config -- one device
-    trigger per button (pressed/released), encoder button
-    (pressed/released), and encoder twist (cw/ccw), so they show up
-    under Settings -> Automations -> Add Trigger -> Device -> AKP05,
-    same as e.g. a Zigbee remote. All share one event topic
-    (akp05/event); each trigger's discovery config just matches a
-    distinct payload on it.
+What gets published:
+  - homeassistant/light/akp05/brightness/config (retained) -- one light
+    entity for panel brightness (buttons + strip together, same as the
+    device's own LIG command). Turning it off just sets brightness to 0
+    -- it does NOT wipe button/strip images (see akp05/cmd's clear_all
+    for that, kept as an explicit action, never a side effect of the
+    light).
+  - homeassistant/event/akp05/<id>/config (retained) -- one MQTT `event`
+    entity per button, encoder button, and encoder twist pair (18
+    total). Each is a real entity (Settings -> Devices & Services ->
+    MQTT -> Ajazz AKP05), and its presses are usable as automation
+    triggers the standard way (Add Trigger -> Entity -> When an event
+    occurs). Was originally device_automation triggers (device-only,
+    no entities) instead -- those produced zero visible triggers with
+    no validation error logged anywhere, so this uses the same
+    discovery code path already confirmed working for the light.
   - akp05/status -- retained "online"/"offline" (MQTT last-will), used
-    as the light's availability topic.
+    as every entity's availability topic.
+  - akp05/event/<id> -- NOT retained (a stateless press shouldn't replay
+    on every restart), JSON {"event_type": "pressed"} etc., one per
+    entity above.
 
 What it subscribes to:
-  - akp05/brightness/set -- plain "0".."100" (the light entity's own
-    command topic).
+  - akp05/power/set, akp05/brightness/set -- the light entity's own
+    command topics ("ON"/"OFF" and "0".."100" respectively).
   - akp05/cmd -- JSON commands for things that don't map to a single
-    entity/trigger: icons, raw images, clearing. See the add-on's
-    README for the payload shapes; call these from automations with the
+    entity: icons, raw images, clearing. See the add-on's README for
+    the payload shapes; call these from automations with the
     mqtt.publish service.
 """
 
@@ -65,7 +72,8 @@ OPTIONS_PATH = "/data/options.json"
 DEVICE_ID = "akp05"
 
 STATUS_TOPIC = f"{DEVICE_ID}/status"
-EVENT_TOPIC = f"{DEVICE_ID}/event"
+POWER_SET_TOPIC = f"{DEVICE_ID}/power/set"
+POWER_STATE_TOPIC = f"{DEVICE_ID}/power/state"
 BRIGHTNESS_SET_TOPIC = f"{DEVICE_ID}/brightness/set"
 BRIGHTNESS_STATE_TOPIC = f"{DEVICE_ID}/brightness/state"
 CMD_TOPIC = f"{DEVICE_ID}/cmd"
@@ -111,43 +119,60 @@ MQTT_PASSWORD = OPTIONS.get("mqtt_password") or os.environ.get("MQTT_PASSWORD") 
 
 
 def _light_discovery_payload() -> dict:
+    # The standard MQTT light shape (separate command_topic for on/off,
+    # plus brightness_command_topic/brightness_state_topic) rather than
+    # the on_command_type: brightness shortcut this used before -- that
+    # relies on command_topic being safely omittable, which isn't
+    # actually certain, and a schema-validation failure on this payload
+    # would silently produce zero entities, which is exactly what was
+    # seen. This shape is unambiguously well-supported.
     return {
         "name": "Brightness",
         "unique_id": f"{DEVICE_ID}_brightness",
+        "command_topic": POWER_SET_TOPIC,
+        "state_topic": POWER_STATE_TOPIC,
+        "payload_on": "ON",
+        "payload_off": "OFF",
         "brightness_command_topic": BRIGHTNESS_SET_TOPIC,
         "brightness_state_topic": BRIGHTNESS_STATE_TOPIC,
         "brightness_scale": 100,
-        # No separate on/off payload -- HA derives on/off from brightness
-        # (0 = off) and sends brightness for both "turn on" and "turn
-        # off" clicks, matching LIG's actual single-value protocol.
-        "on_command_type": "brightness",
         "availability_topic": STATUS_TOPIC,
         "device": DEVICE_INFO,
     }
 
 
-def _triggers():
-    """(trigger type, subtype) pairs. Payload on EVENT_TOPIC for each is
-    "type:subtype" -- keep in sync with _classify() below."""
+def _event_entities():
+    """(object_id, event_types, device_class) for every button/encoder.
+    Each gets its own MQTT `event` entity (a real entity, not just a
+    device-only trigger -- MQTT device_automation triggers were tried
+    first and silently produced nothing despite valid-looking, error-free
+    discovery payloads; event entities go through the same discovery
+    code path already confirmed working for the light, so this is the
+    higher-confidence mechanism and it means these show up as normal
+    entities too, not just as automation triggers."""
     for button in range(1, 11):
-        yield "pressed", f"button_{button}"
-        yield "released", f"button_{button}"
+        yield f"button_{button}", ["pressed", "released"], "button"
     for encoder in range(1, 5):
-        yield "pressed", f"encoder_{encoder}_button"
-        yield "released", f"encoder_{encoder}_button"
-        yield "cw", f"encoder_{encoder}"
-        yield "ccw", f"encoder_{encoder}"
+        yield f"encoder_{encoder}_button", ["pressed", "released"], "button"
+        yield f"encoder_{encoder}", ["cw", "ccw"], None
 
 
-def _trigger_discovery_payload(trigger_type: str, subtype: str) -> dict:
-    return {
-        "automation_type": "trigger",
-        "type": trigger_type,
-        "subtype": subtype,
-        "topic": EVENT_TOPIC,
-        "payload": f"{trigger_type}:{subtype}",
+def _event_topic(object_id: str) -> str:
+    return f"{DEVICE_ID}/event/{object_id}"
+
+
+def _event_discovery_payload(object_id: str, event_types: list, device_class: str | None) -> dict:
+    payload = {
+        "name": object_id.replace("_", " ").title(),
+        "unique_id": f"{DEVICE_ID}_{object_id}",
+        "state_topic": _event_topic(object_id),
+        "event_types": event_types,
+        "availability_topic": STATUS_TOPIC,
         "device": DEVICE_INFO,
     }
+    if device_class:
+        payload["device_class"] = device_class
+    return payload
 
 
 def publish_discovery(client: mqtt.Client):
@@ -156,11 +181,10 @@ def publish_discovery(client: mqtt.Client):
         json.dumps(_light_discovery_payload()),
         retain=True,
     )
-    for trigger_type, subtype in _triggers():
-        object_id = f"{trigger_type}_{subtype}"
+    for object_id, event_types, device_class in _event_entities():
         client.publish(
-            f"{DISCOVERY_PREFIX}/device_automation/{DEVICE_ID}/{object_id}/config",
-            json.dumps(_trigger_discovery_payload(trigger_type, subtype)),
+            f"{DISCOVERY_PREFIX}/event/{DEVICE_ID}/{object_id}/config",
+            json.dumps(_event_discovery_payload(object_id, event_types, device_class)),
             retain=True,
         )
 
@@ -176,22 +200,29 @@ class Bridge:
         self.client = client
         self.device = None
         self.brightness = 50
+        self._last_nonzero_brightness = 50
 
     def connect_device(self):
         self.device = connect(self._on_report, full_init=True)
-        self.publish_brightness()
+        self.publish_state()
 
     def _out_len(self) -> int:
         return self.device.hid_caps.output_report_byte_length
 
-    def publish_brightness(self):
+    def publish_state(self):
         self.client.publish(BRIGHTNESS_STATE_TOPIC, str(self.brightness), retain=True)
+        self.client.publish(POWER_STATE_TOPIC, "ON" if self.brightness > 0 else "OFF", retain=True)
 
     def set_brightness(self, value: int):
         value = max(0, min(100, int(value)))
         send_commands(self.device, [crt_command("LIG", [0x00, 0x00, value], self._out_len())])
         self.brightness = value
-        self.publish_brightness()
+        if value > 0:
+            self._last_nonzero_brightness = value
+        self.publish_state()
+
+    def set_power(self, on: bool):
+        self.set_brightness(self._last_nonzero_brightness if on else 0)
 
     def clear_all(self):
         out_len = self._out_len()
@@ -202,7 +233,7 @@ class Bridge:
             crt_command("STP", [], out_len),
         ])
         self.brightness = 0
-        self.publish_brightness()
+        self.publish_state()
 
     def set_button_image(self, button: int, jpeg_bytes: bytes):
         upload_image(self.device, BUTTON_TO_WIRE_KEY[button], jpeg_bytes)
@@ -234,13 +265,14 @@ class Bridge:
 
     @staticmethod
     def _classify(key: int, state: int):
+        """Returns (object_id, event_type) matching _event_entities()."""
         if key in BUTTON_KEYS:
-            return ("pressed" if state == 1 else "released"), f"button_{key}"
+            return f"button_{key}", ("pressed" if state == 1 else "released")
         if key in ENCODER_PRESS_KEYS:
-            return ("pressed" if state == 1 else "released"), f"encoder_{ENCODER_PRESS_KEYS[key]}_button"
+            return f"encoder_{ENCODER_PRESS_KEYS[key]}_button", ("pressed" if state == 1 else "released")
         if key in ENCODER_TWIST_KEYS:
             enc_id, direction = ENCODER_TWIST_KEYS[key]
-            return direction, f"encoder_{enc_id}"
+            return f"encoder_{enc_id}", direction
         return None, None
 
     def _on_report(self, data):
@@ -249,9 +281,11 @@ class Bridge:
         key, state = data[KEY_IDX], data[STATE_IDX]
         if key == 0:
             return
-        trigger_type, subtype = self._classify(key, state)
-        if trigger_type:
-            self.client.publish(EVENT_TOPIC, f"{trigger_type}:{subtype}")
+        object_id, event_type = self._classify(key, state)
+        if object_id:
+            # Not retained -- a stateless press shouldn't replay itself
+            # to every future subscriber/on every HA restart.
+            self.client.publish(_event_topic(object_id), json.dumps({"event_type": event_type}))
 
 
 bridge_holder: dict = {}
@@ -304,19 +338,22 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         )
         return
     print(f"Connected to MQTT broker (host={MQTT_HOST}, user={MQTT_USERNAME or '(none)'})")
+    client.subscribe(POWER_SET_TOPIC)
     client.subscribe(BRIGHTNESS_SET_TOPIC)
     client.subscribe(CMD_TOPIC)
     publish_discovery(client)
     client.publish(STATUS_TOPIC, "online", retain=True)
     bridge = bridge_holder.get("bridge")
     if bridge is not None:
-        bridge.publish_brightness()
+        bridge.publish_state()
 
 
 def on_message(client, userdata, msg):
     bridge = bridge_holder["bridge"]
     try:
-        if msg.topic == BRIGHTNESS_SET_TOPIC:
+        if msg.topic == POWER_SET_TOPIC:
+            bridge.set_power(msg.payload.decode().strip().upper() == "ON")
+        elif msg.topic == BRIGHTNESS_SET_TOPIC:
             bridge.set_brightness(int(msg.payload.decode()))
         elif msg.topic == CMD_TOPIC:
             _handle_cmd(bridge, json.loads(msg.payload.decode()))
