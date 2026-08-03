@@ -76,10 +76,13 @@ automatically once an MQTT broker add-on is running, no setup needed.
         e.g. `homeassistant.local` on whatever port you've set MQTT to
         listen on).
      3. Save, **Restart** the add-on.
-   - "No hidraw device found" → the container can't see the USB device.
-     Confirm the AKP05 shows up on the *host* itself first (the
-     VM-passthrough case above), then confirm `usb`/`udev` are still
-     `true` in `config.yaml`.
+   - "Device not found yet, retrying in 5s..." repeating → the container
+     can't see the USB device. This used to crash-loop the whole add-on
+     (killing MQTT/HAWatcher too) on every miss, including a transient
+     one right after a restart before USB re-enumerated — fixed to retry
+     in-process instead, but if it repeats forever, confirm the AKP05
+     shows up on the *host* itself first (the VM-passthrough case above),
+     then confirm `usb`/`udev` are still `true` in `config.yaml`.
    - Device found, MQTT connected, but a permission error opening
      `/dev/hidrawN` → a udev-rule/permission mismatch inside the
      container. This project hasn't had a chance to confirm the exact

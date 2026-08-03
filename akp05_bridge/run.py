@@ -713,6 +713,26 @@ def on_message(client, userdata, msg):
         print(f"Error handling message on {msg.topic}: {exc}")
 
 
+DEVICE_RETRY_DELAY = 5  # seconds
+
+
+def _connect_device_with_retry(bridge: Bridge):
+    """akp05_device.open_device() calls sys.exit(1) if the hidraw node
+    isn't found yet -- fine for a one-shot CLI script, but for this
+    long-running add-on that previously meant the *entire* process
+    (MQTT client, HAWatcher, everything) died and had to be restarted by
+    Supervisor on every transient miss, e.g. the USB device not having
+    finished re-enumerating yet right after a restart. Retry in-process
+    instead of crash-looping the whole container over it."""
+    while True:
+        try:
+            bridge.connect_device()
+            return
+        except SystemExit:
+            print(f"Device not found yet, retrying in {DEVICE_RETRY_DELAY}s...")
+            time.sleep(DEVICE_RETRY_DELAY)
+
+
 def main():
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=DEVICE_ID)
     if MQTT_USERNAME:
@@ -723,7 +743,7 @@ def main():
 
     bridge = Bridge(client)
     bridge_holder["bridge"] = bridge
-    bridge.connect_device()
+    _connect_device_with_retry(bridge)
 
     ha_watcher = HAWatcher(bridge)
     bridge_holder["ha_watcher"] = ha_watcher
