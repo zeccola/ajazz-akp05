@@ -49,27 +49,33 @@ takes a few minutes.
 
 ## Configure and start
 
-Nothing to configure by default — MQTT broker connection details (host,
-port, credentials) are injected automatically by Supervisor because this
-add-on declares `mqtt:need` in its `config.yaml`, as long as the
-Mosquitto (or other MQTT-providing) add-on is installed and running. The
-only option is `discovery_prefix` (default `homeassistant`), which you'd
-only ever need to change if you customized that setting in HA's own MQTT
-integration.
+Try it with no configuration first — this add-on declares `mqtt:want` in
+`config.yaml`, so Supervisor *should* inject broker host/port/credentials
+automatically once an MQTT broker add-on is running, no setup needed.
 
 1. **Info** tab → **Start**. Optionally enable **Start on boot** and
    **Watchdog** so it recovers automatically.
 2. **Log** tab — confirm you see the device get found and "Connected to
    MQTT broker". If not:
+   - **"MQTT connection rejected"**, or Mosquitto's own log shows
+     `received null username or password` / `not authorised` — the
+     Supervisor auto-injection didn't provide credentials (this has been
+     seen to simply not fire in some setups, or only reliably works with
+     the *official* Mosquitto broker add-on specifically). Fix: create a
+     dedicated MQTT login and enter it manually —
+     1. **Settings → People → Users → Add User** (or, if your Mosquitto
+        add-on has its own **Logins** list in its Configuration tab, add
+        an entry there instead).
+     2. Open this add-on's **Configuration** tab, fill in `mqtt_username`
+        / `mqtt_password` with that login (and `mqtt_host`/`mqtt_port`
+        too, if the broker isn't at the default `core-mosquitto:1883` —
+        e.g. `homeassistant.local` on whatever port you've set MQTT to
+        listen on).
+     3. Save, **Restart** the add-on.
    - "No hidraw device found" → the container can't see the USB device.
      Confirm the AKP05 shows up on the *host* itself first (the
      VM-passthrough case above), then confirm `usb`/`udev` are still
      `true` in `config.yaml`.
-   - Stuck retrying the MQTT connection → check the MQTT broker add-on
-     is actually running, and that this add-on's `mqtt:need` service
-     dependency resolved (Supervisor should refuse to start it
-     otherwise, but a broker that crashes after startup can still cause
-     this).
    - Device found, MQTT connected, but a permission error opening
      `/dev/hidrawN` → a udev-rule/permission mismatch inside the
      container. This project hasn't had a chance to confirm the exact

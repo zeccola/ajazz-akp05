@@ -97,12 +97,17 @@ def load_options() -> dict:
 OPTIONS = load_options()
 DISCOVERY_PREFIX = OPTIONS.get("discovery_prefix") or "homeassistant"
 
-# Supervisor injects these once an MQTT broker is available, per this
-# add-on's `services: [mqtt:need]` in config.yaml -- no manual entry.
-MQTT_HOST = os.environ.get("MQTT_HOST", "core-mosquitto")
-MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
-MQTT_USERNAME = os.environ.get("MQTT_USERNAME") or None
-MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD") or None
+# Supervisor is *supposed* to inject these once an MQTT broker is
+# available (this add-on declares `mqtt:want` in config.yaml), but that
+# auto-provisioning only works with the official Mosquitto broker add-on
+# and has been seen not to fire at all in some setups (falling back to
+# an anonymous connection Mosquitto then rejects) -- so the add-on's own
+# Configuration-tab options always win when set, as a manual escape
+# hatch that doesn't depend on that mechanism working.
+MQTT_HOST = OPTIONS.get("mqtt_host") or os.environ.get("MQTT_HOST", "core-mosquitto")
+MQTT_PORT = int(OPTIONS.get("mqtt_port") or os.environ.get("MQTT_PORT", "1883"))
+MQTT_USERNAME = OPTIONS.get("mqtt_username") or os.environ.get("MQTT_USERNAME") or None
+MQTT_PASSWORD = OPTIONS.get("mqtt_password") or os.environ.get("MQTT_PASSWORD") or None
 
 
 def _light_discovery_payload() -> dict:
@@ -289,7 +294,16 @@ def _handle_cmd(bridge: Bridge, payload: dict):
 
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
-    print(f"Connected to MQTT broker (reason_code={reason_code})")
+    if getattr(reason_code, "is_failure", bool(reason_code)):
+        print(
+            f"MQTT connection rejected: {reason_code}. If this says "
+            "unauthorized/not authorised, mqtt_username/mqtt_password "
+            "are empty or wrong -- set them in this add-on's "
+            "Configuration tab (see the README's Troubleshooting "
+            "section for how to create an MQTT login)."
+        )
+        return
+    print(f"Connected to MQTT broker (host={MQTT_HOST}, user={MQTT_USERNAME or '(none)'})")
     client.subscribe(BRIGHTNESS_SET_TOPIC)
     client.subscribe(CMD_TOPIC)
     publish_discovery(client)

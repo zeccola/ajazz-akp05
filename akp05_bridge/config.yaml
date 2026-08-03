@@ -20,8 +20,12 @@ init: false
 usb: true
 udev: true
 services:
-  - mqtt:need
+  - mqtt:want
 options:
   discovery_prefix: "homeassistant"
 schema:
   discovery_prefix: "str"
+  mqtt_host: "str?"
+  mqtt_port: "port?"
+  mqtt_username: "str?"
+  mqtt_password: "password?"
