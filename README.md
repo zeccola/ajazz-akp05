@@ -199,16 +199,24 @@ HTTP+WebSocket API.
 
 ### Install the add-on
 
-1. Copy `addon/akp05_bridge/` onto the HA host as a local add-on (via the
-   Samba or SSH & Terminal add-on) to `/addons/local/akp05_bridge/` —
-   that folder itself, containing `config.yaml`.
-2. Settings → Add-ons → Add-on Store → ⋮ (top-right) → Check for updates.
-   "AKP05 Bridge" should now appear under Local add-ons.
-3. Install it, open its **Configuration** tab, set `api_token` to any
+Easiest path — push this repo to GitHub, then click (opens *your own* HA
+UI via the My Home Assistant redirect, not anything hosted here):
+
+[![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fzeccola%2Fajazz-akp05)
+
+That fills in Settings → Add-ons → Add-on Store → Repositories for you —
+click **Add**, then find "AKP05 Bridge" in the store. Full instructions,
+including a manual/no-GitHub-push fallback via Samba/SSH, are in
+[`addon/akp05_bridge/README.md`](addon/akp05_bridge/README.md). Short
+version once the repository's added:
+
+1. Settings → Add-ons → Add-on Store → ⋮ (top-right) → Check for updates.
+   "AKP05 Bridge" should now appear.
+2. Install it, open its **Configuration** tab, set `api_token` to any
    random string (this is what the integration authenticates with —
    there's no other access control on the API, since it needs to be
    reachable from Core), then **Start** it.
-4. Check its **Log** tab for a line confirming the device was found — if
+3. Check its **Log** tab for a line confirming the device was found — if
    not, see Troubleshooting below.
 
 ### Install the integration
