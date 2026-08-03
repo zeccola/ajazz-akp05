@@ -202,9 +202,10 @@ HTTP+WebSocket API.
 Easiest path — push this repo to GitHub, then click (opens *your own* HA
 UI via the My Home Assistant redirect, not anything hosted here):
 
-[![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fzeccola%2Fajazz-akp05)
+[![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fzeccola%2Fajazz-akp05%23homeassistant)
 
-That fills in Settings → Add-ons → Add-on Store → Repositories for you —
+Points at the `homeassistant` branch. That fills in
+Settings → Add-ons → Add-on Store → Repositories for you —
 click **Add**, then find "AKP05 Bridge" in the store. Full instructions,
 including a manual/no-GitHub-push fallback via Samba/SSH, are in
 [`addon/akp05_bridge/README.md`](addon/akp05_bridge/README.md). Short

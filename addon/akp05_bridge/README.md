@@ -25,20 +25,22 @@ place.
 This is the least fiddly if the repo's already on GitHub, and gives you
 "Check for updates" going forward instead of re-copying files.
 
-1. Push your changes (this `addon/` folder needs to be on the remote,
-   not just local) — `git push origin homeassistant` or merge to
-   `main` first, whichever you're using.
+1. Push your changes to GitHub — `git push origin homeassistant`. Note:
+   Supervisor clones a repo's *default branch* (`main` here) unless the
+   URL names a different one, which is why the link below has
+   `#homeassistant` on the end — this add-on hasn't been merged to
+   `main` yet, pending real-hardware verification.
 2. Click this, from a browser on the same network as your HA instance
    (it needs the **My Home Assistant** feature, on by default, and
    opens *your own* HA UI, not anything hosted by this repo):
 
-   [![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fzeccola%2Fajazz-akp05)
+   [![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fzeccola%2Fajazz-akp05%23homeassistant)
 
    That opens Settings → Add-ons → Add-on Store → Repositories with the
    URL already filled in — just click **Add**. If it doesn't work (e.g.
    HA isn't reachable from wherever you're clicking it), add it by hand
    instead: **Settings → Add-ons → Add-on Store → ⋮ (top right) →
-   Repositories**, paste `https://github.com/zeccola/ajazz-akp05`, Add.
+   Repositories**, paste `https://github.com/zeccola/ajazz-akp05#homeassistant`, Add.
 3. Close and reopen the Add-on Store. An "AKP05 Bridge" card should
    appear (Supervisor scans the whole repo for folders containing a
    `config.yaml`, so it finds `addon/akp05_bridge/` automatically —
