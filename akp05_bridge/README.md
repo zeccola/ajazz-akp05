@@ -122,8 +122,8 @@ automatically once an MQTT broker add-on is running, no setup needed.
 - **Brightness** — the light entity. Turning it off sets brightness to
   0% only — it does **not** wipe button/strip images, unlike the CLI's
   `akp05_set_brightness.py off`. Deliberately kept separate (see
-  `clear_all` below) so toggling this in a routine automation can't
-  accidentally erase your icons.
+  `display_off`/`display_on` below) so toggling this in a routine
+  automation can't accidentally erase your icons.
 - **Setting a button's icon — directly in the UI, no automation needed**
   — each button has a **Button N Icon** text entity (Settings → Devices
   & Services → MQTT → Ajazz AKP05, or just search for it). Click it,
@@ -159,14 +159,25 @@ automatically once an MQTT broker add-on is running, no setup needed.
   # blank one button
   {"action": "clear_button", "button": 3}
 
-  # dim to 0% AND wipe every button/strip image -- destructive,
-  # images must be re-uploaded afterward
-  {"action": "clear_all"}
+  # turn the whole display off -- dims to 0% AND wipes every button/strip
+  # image to actual black (brightness alone doesn't get you there; the
+  # panel stays faintly visible at 0%). "clear_all" is the same action
+  # under its older name, kept working -- use whichever reads better in
+  # your automation.
+  {"action": "display_off"}
+
+  # ...and back on: restores brightness and re-renders every button's
+  # remembered icon (nothing else currently does that in one call --
+  # otherwise it needs a full add-on restart to come back)
+  {"action": "display_on"}
 
   # whole touch strip (800x112, auto-resized) or one of its 200px chunks
   {"action": "set_strip", "image_b64": "..."}
   {"action": "set_strip_chunk", "chunk": 12, "image_b64": "..."}
   ```
+
+  A common use: an automation on `sun.sun`/a schedule/an `input_boolean`
+  calling `display_off` at night and `display_on` in the morning.
 
 ## Topic reference
 

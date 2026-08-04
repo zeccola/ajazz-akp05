@@ -63,8 +63,19 @@ What it subscribes to:
   - akp05/cmd -- JSON commands for things that don't map to a single
     entity: raw images (there's no MQTT entity type for uploading a
     file from the UI, so this stays automation/script-only), strip
-    images, clearing. See the add-on's README for the payload shapes;
-    call these from automations with the mqtt.publish service.
+    images, clearing, display_off/display_on. See the add-on's README
+    for the payload shapes; call these from automations with the
+    mqtt.publish service.
+
+akp05/cmd's display_off/display_on are a deliberate pair, separate from
+the light entity's own on/off: the light is non-destructive brightness
+only (see above), while display_off actually blacks the screen (brightness
+alone doesn't -- LIG is backlight/PWM only, content stays faintly visible
+at 0%, confirmed in akp05_set_brightness.py's docstring) by also wiping
+every button/strip image, and display_on is the new way back -- restores
+brightness and re-renders everything that was showing, which previously
+needed a full add-on restart to get back (connect_device()'s own restore
+logic, now also reachable on demand).
 
 For syncing a button's icon to an entity's on/off state (green/red),
 use an automation triggered on that entity's state, calling the
@@ -362,6 +373,13 @@ class Bridge:
         self.set_brightness(self._last_nonzero_brightness if on else 0)
 
     def clear_all(self):
+        """Dims to 0% AND wipes every button/strip image to black -- the
+        actual way to make the screen go black. Brightness alone doesn't
+        do it (confirmed in akp05_set_brightness.py's own docstring: LIG
+        is backlight/PWM only, content stays faintly visible at 0%), so
+        this is what display_off (below) uses under a clearer name for
+        that specific use case. Doesn't touch button_icons -- the add-on
+        still remembers what was showing, so display_on can restore it."""
         out_len = self._out_len()
         send_commands(self.device, [
             crt_command("LIG", [0x00, 0x00, 0], out_len),
@@ -371,6 +389,14 @@ class Bridge:
         ])
         self.brightness = 0
         self.publish_state()
+
+    def display_on(self):
+        """Pairs with clear_all/display_off: restores brightness and
+        re-renders every button's remembered icon (reuses the same
+        restore logic connect_device() already uses after a reconnect --
+        this just triggers it on demand instead)."""
+        self.set_brightness(self._last_nonzero_brightness)
+        self._restore_button_icons()
 
     def set_button_image(self, button: int, jpeg_bytes: bytes):
         upload_image(self.device, BUTTON_TO_WIRE_KEY[button], jpeg_bytes)
@@ -439,8 +465,10 @@ def _handle_cmd(bridge: Bridge, payload: dict):
     action = payload.get("action")
     if action == "set_brightness":
         bridge.set_brightness(payload["value"])
-    elif action == "clear_all":
+    elif action in ("clear_all", "display_off"):
         bridge.clear_all()
+    elif action == "display_on":
+        bridge.display_on()
     elif action == "clear_button":
         bridge.clear_button(int(payload["button"]))
     elif action == "set_icon":
