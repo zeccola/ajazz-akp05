@@ -99,6 +99,17 @@ automatically once an MQTT broker add-on is running, no setup needed.
      add-on restart), but nothing was re-uploading the remembered icons.
      `connect_device()` now re-renders every button it has a saved icon
      for immediately after connecting.
+   - **Unplugging and replugging the USB cable leaves the panel black
+     until you manually restart the add-on** — this was also a real bug
+     (fixed): a physical disconnect made the read/keepalive threads
+     silently end with no recovery attempt, so replugging the cable
+     didn't do anything on its own. The add-on now notices (via either
+     thread) and reconnects on its own once the device reappears, same
+     retry loop the initial connection uses -- watch the **Log** tab for
+     "Device disconnected -- waiting for it to come back..." followed by
+     "Device reconnected". `akp05/status` also correctly reports
+     `offline` for that window, so entities show unavailable rather than
+     silently stale.
 3. In Home Assistant: **Settings → Devices & Services → MQTT** — an
    "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
    "Add Integration" step needed) with a **Brightness** entity, 18 event

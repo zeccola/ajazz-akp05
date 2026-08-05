@@ -1,5 +1,5 @@
 name: "AKP05 Bridge"
-version: "0.8.0"
+version: "0.8.1"
 slug: "akp05_bridge"
 description: >-
   USB bridge for the Ajazz AKP05 macro pad. Owns the raw HID connection

@@ -113,6 +113,7 @@ state, calling the akp05/cmd set_icon action with the appropriate
 import base64
 import json
 import os
+import threading
 import time
 from io import BytesIO
 
@@ -432,6 +433,7 @@ class Bridge:
         self.device = None
         self.brightness = 50
         self._last_nonzero_brightness = 50
+        self._reconnect_lock = threading.Lock()
         # Persisted across restarts. A button shows an icon OR a text
         # value, never both -- set_icon/set_text each clear the other's
         # entry for that button, so at most one of these two dicts has
@@ -444,9 +446,35 @@ class Bridge:
         self.button_follows: dict[int, str] = {int(k): v for k, v in _load_json(FOLLOWS_PATH, {}).items()}
 
     def connect_device(self):
-        self.device = connect(self._on_report, full_init=True)
+        self.device = connect(self._on_report, full_init=True, on_disconnect=self._handle_disconnect)
         self.publish_state()
         self._restore_button_displays()
+
+    def _handle_disconnect(self):
+        """Called from a background thread (akp05_device's read loop or
+        keepalive loop -- possibly both, around the same time) once a
+        physical unplug is noticed. Used to just end silently with no
+        recovery, needing a manual add-on restart even after replugging
+        the cable -- this reconnects in-process instead, reusing the
+        same "wait for the device to reappear" retry loop startup already
+        uses. Guarded by a lock since both detectors can fire together."""
+        if not self._reconnect_lock.acquire(blocking=False):
+            return
+        threading.Thread(target=self._reconnect, daemon=True).start()
+
+    def _reconnect(self):
+        try:
+            print("Device disconnected -- waiting for it to come back...")
+            self.client.publish(STATUS_TOPIC, "offline", retain=True)
+            try:
+                self.device.close()
+            except Exception:
+                pass
+            _connect_device_with_retry(self)
+            print("Device reconnected")
+            self.client.publish(STATUS_TOPIC, "online", retain=True)
+        finally:
+            self._reconnect_lock.release()
 
     def _restore_button_displays(self):
         """full_init wipes every button's screen (CLE) on every connect

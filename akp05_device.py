@@ -71,6 +71,14 @@ crate (github.com/4ndv/mirajazz) and the `opendeck-akp05` OpenDeck plugin
     keepalive's own writes from interleaving with an in-progress
     multi-packet image upload, which has no per-chunk framing of its own
     to survive that.
+  - A physical unplug (not just a protocol-level drop the keepalive
+    guards against) makes os.read/os.write on the hidraw fd start
+    raising OSError -- this used to just silently end the read and
+    keepalive threads with no way for a caller to know or recover, so a
+    disconnect needed a full process restart even after replugging.
+    connect()/open_device() now take an on_disconnect callback for this
+    (see their docstrings) -- the module itself only detects and reports
+    it, reconnecting is the caller's job.
 
 Platform support: Windows uses `pywinusb` (wraps the native HID API, which
 always wants a leading report-ID byte even though this device has no real
@@ -191,11 +199,19 @@ class LinuxHidDevice:
 
     REPORT_LENGTH = 1024  # matches the Windows packet_size (total_len - 1)
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, on_disconnect=None):
         self._fd = os.open(path, os.O_RDWR)
         self._handler = lambda data: None
         self._thread = None
         self._stop = threading.Event()
+        # Called from whichever background thread notices the device is
+        # gone -- a physical unplug means os.read/os.write start raising
+        # OSError, and this used to just silently end the read/keepalive
+        # threads with no way for a caller to know or recover, needing a
+        # full process restart even after replugging. May be called more
+        # than once (both the read loop and the keepalive loop can each
+        # notice); callers are expected to de-duplicate/be idempotent.
+        self._on_disconnect = on_disconnect
         self.hid_caps = _HidCaps(self.REPORT_LENGTH + 1)
 
     def set_raw_data_handler(self, handler):
@@ -209,9 +225,21 @@ class LinuxHidDevice:
             try:
                 data = os.read(self._fd, self.REPORT_LENGTH)
             except OSError:
+                data = b""
+            if not data:
+                # Either an OSError (e.g. ENODEV) or a clean EOF (empty
+                # read) -- don't bet on which one a real unplugged hidraw
+                # node actually produces, treat both as "device is gone".
+                # Tested with a pipe: closing the write end gives EOF, not
+                # OSError -- without this, that case span this loop at
+                # 100% CPU forever instead of ever noticing.
+                if self._on_disconnect is not None:
+                    try:
+                        self._on_disconnect()
+                    except Exception:
+                        pass
                 return
-            if data:
-                self._handler(list(data))
+            self._handler(list(data))
 
     def send_output_report(self, buf):
         # buf[0] is the Windows-only pad/report-ID byte (see module
@@ -243,12 +271,20 @@ def _find_hidraw_path(vendor_id: int, product_id: int) -> str | None:
     return None
 
 
-def open_device(raw_data_handler=None):
+def open_device(raw_data_handler=None, on_disconnect=None):
     """Open the AKP05 and register raw_data_handler for input reports
     (pass None if you're only sending commands). Sends no init commands
     at all -- caller is responsible for that. Returns the open device
     (pywinusb on Windows, LinuxHidDevice on Linux); caller must call
     .close() when done.
+
+    on_disconnect, if given, is called (maybe more than once -- see
+    LinuxHidDevice) from a background thread once a physical unplug is
+    noticed (Linux: the read loop's own os.read failing; both platforms:
+    the keepalive's write failing). It's the caller's job to actually
+    reconnect -- this module only detects and reports it, so a one-shot
+    script doesn't need to care, but a long-running caller (the add-on)
+    can wire this up to retry.
 
     Every caller gets a background keepalive (see module docstring) and
     a write lock from here -- not just connect() -- since even the
@@ -268,12 +304,12 @@ def open_device(raw_data_handler=None):
         if path is None:
             print(f"No hidraw device found for VID_{VENDOR_ID:04X} & PID_{PRODUCT_ID:04X}.")
             sys.exit(1)
-        device = LinuxHidDevice(path)
+        device = LinuxHidDevice(path, on_disconnect=on_disconnect)
         device.set_raw_data_handler(raw_data_handler or (lambda data: None))
 
     out_len = device.hid_caps.output_report_byte_length
     device._write_lock = threading.Lock()
-    _start_keepalive(device, out_len)
+    _start_keepalive(device, out_len, on_disconnect)
     return device
 
 
@@ -341,21 +377,26 @@ def upload_image(device, wire_key: int, jpeg_bytes: bytes):
     send_commands(device, [crt_command("STP", [], out_len)])
 
 
-def _keepalive_loop(device, out_len: int, stop_event: threading.Event):
+def _keepalive_loop(device, out_len: int, stop_event: threading.Event, on_disconnect):
     while not stop_event.wait(KEEPALIVE_INTERVAL):
         try:
             send_commands(device, minimal_init_sequence(out_len) + [keep_alive_command(out_len)])
         except Exception:
-            return  # device is gone -- whatever's reading input reports will notice too
+            if on_disconnect is not None:
+                try:
+                    on_disconnect()
+                except Exception:
+                    pass
+            return  # device is gone -- the read loop should notice too (Linux), or the caller's on_disconnect handles it
 
 
-def _start_keepalive(device, out_len: int):
+def _start_keepalive(device, out_len: int, on_disconnect=None):
     """Runs for the life of the connection -- without this the device
     drops its own connection after ~15s (see module docstring). Wraps
     device.close() so callers don't need to know this thread exists;
     every existing `device.close()` call site already stops it for free."""
     stop_event = threading.Event()
-    thread = threading.Thread(target=_keepalive_loop, args=(device, out_len, stop_event), daemon=True)
+    thread = threading.Thread(target=_keepalive_loop, args=(device, out_len, stop_event, on_disconnect), daemon=True)
     thread.start()
 
     original_close = device.close
@@ -367,14 +408,14 @@ def _start_keepalive(device, out_len: int):
     device.close = close_and_stop_keepalive
 
 
-def connect(raw_data_handler=None, full_init: bool = True):
+def connect(raw_data_handler=None, full_init: bool = True, on_disconnect=None):
     """open_device() (which already starts the background keepalive --
     see its docstring) plus the init sequence. Set full_init=False to
     send only the minimal wake-up sequence, leaving brightness and
     existing key images untouched -- note this path is unverified on
     real hardware; the full sequence is what's actually been confirmed
-    to unlock the device."""
-    device = open_device(raw_data_handler)
+    to unlock the device. on_disconnect: see open_device()."""
+    device = open_device(raw_data_handler, on_disconnect=on_disconnect)
     out_len = device.hid_caps.output_report_byte_length
     sequence = build_init_sequence(out_len) if full_init else minimal_init_sequence(out_len)
     send_commands(device, sequence)
