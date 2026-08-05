@@ -197,6 +197,15 @@ automatically once an MQTT broker add-on is running, no setup needed.
   # whole touch strip (800x112, auto-resized) or one of its 200px chunks
   {"action": "set_strip", "image_b64": "..."}
   {"action": "set_strip_chunk", "chunk": 12, "image_b64": "..."}
+
+  # EXPERIMENTAL, unconfirmed on real hardware -- a "HAN" command found
+  # in mirajazz's source, distinct from LIG, used by its own sleep()/
+  # shutdown() -- possibly an actual power state rather than dim+wipe.
+  # Not wired into display_off/display_on until this is confirmed safe:
+  # nobody knows yet whether the panel reliably wakes back up afterward.
+  # If it stops responding to anything after this, a physical unplug/
+  # replug may be the only recovery. Test carefully.
+  {"action": "experimental_sleep"}
   ```
 
   A common use: an automation on `sun.sun`/a schedule/an `input_boolean`

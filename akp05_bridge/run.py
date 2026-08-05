@@ -90,9 +90,9 @@ What it subscribes to:
   - akp05/cmd -- JSON commands for things that don't map to a single
     entity: raw images (there's no MQTT entity type for uploading a
     file from the UI, so this stays automation/script-only), strip
-    images, clearing, display_off/display_on, set_text. See the add-on's
-    README for the payload shapes; call these from automations with the
-    mqtt.publish service.
+    images, clearing, display_off/display_on, set_text,
+    experimental_sleep. See the add-on's README for the payload shapes;
+    call these from automations with the mqtt.publish service.
 
 akp05/cmd's display_off/display_on are a deliberate pair, separate from
 the light entity's own on/off: the light is non-destructive brightness
@@ -103,6 +103,18 @@ every button/strip image, and display_on is the new way back -- restores
 brightness and re-renders everything that was showing (icons and text
 values alike), which previously needed a full add-on restart to get back
 (connect_device()'s own restore logic, now also reachable on demand).
+
+experimental_sleep is a different, unconfirmed attempt at a *real* power
+state rather than dim+wipe -- a "HAN" command found in mirajazz's source
+(distinct from LIG), used by its own Device::sleep()/Device::shutdown().
+opendeck-akp05 (the AKP05-specific project) does call shutdown() itself,
+which is a real signal this is relevant to this device, not just some
+other Mirabox model mirajazz also supports -- but nobody has confirmed
+on real AKP05 hardware whether it behaves differently from 0% brightness,
+or how the panel wakes back up afterward. See Bridge.sleep_display()'s
+docstring before relying on this for anything -- worst case, if the panel
+stops responding to anything, a physical unplug/replug may be the only
+way to recover it.
 
 For syncing a button's icon to an entity's on/off state (green/red)
 rather than a text value, use an automation triggered on that entity's
@@ -538,6 +550,28 @@ class Bridge:
         self.set_brightness(self._last_nonzero_brightness)
         self._restore_button_displays()
 
+    def sleep_display(self):
+        """EXPERIMENTAL, unconfirmed on real AKP05 hardware -- do not
+        wire this into display_off/display_on until it's actually been
+        tested. Found in mirajazz's source: a "HAN" command (distinct
+        from LIG) that its own Device::sleep()/Device::shutdown() use --
+        real signal it's relevant to this device specifically, not just
+        some other Mirabox model mirajazz also supports: opendeck-akp05
+        (the AKP05-specific project, not the general library) actually
+        calls shutdown() somewhere in its own code, which goes through
+        this same command. Whether it produces a genuinely different
+        result than 0% brightness, and how (or whether) the panel wakes
+        back up afterward via a normal command, is unknown -- if it
+        doesn't respond to anything after this, a physical unplug/replug
+        may be the only way to recover it. Test on real hardware with
+        that in mind before relying on it for anything."""
+        out_len = self._out_len()
+        send_commands(self.device, [
+            crt_command("DIS", [], out_len),
+            crt_command("LIG", [0x00, 0x00], out_len),
+            crt_command("HAN", [], out_len),
+        ])
+
     def set_button_image(self, button: int, jpeg_bytes: bytes):
         upload_image(self.device, BUTTON_TO_WIRE_KEY[button], jpeg_bytes)
 
@@ -626,6 +660,8 @@ def _handle_cmd(bridge: Bridge, payload: dict):
         bridge.clear_all()
     elif action == "display_on":
         bridge.display_on()
+    elif action == "experimental_sleep":
+        bridge.sleep_display()
     elif action == "clear_button":
         bridge.clear_button(int(payload["button"]))
     elif action == "set_icon":
