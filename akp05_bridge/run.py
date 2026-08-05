@@ -43,6 +43,19 @@ What gets published:
     me set the mdi from Home Assistant". An unrecognized name just
     doesn't update (see akp05/button_<n>/icon/state below); MQTT text
     entities have no other way to surface an error.
+  - homeassistant/text/akp05/button_<n>_text/config (retained) -- a
+    second `text` entity per button: pushes an already-formatted string
+    (e.g. "21.4°C") straight to the screen via akp05_icons.build_text
+    (Roboto -- same font Home Assistant's own frontend uses --
+    auto-shrunk to fit). A button shows an icon OR a text value, never
+    both; setting one clears the other's remembered state for that
+    button.
+  - homeassistant/text/akp05/button_<n>_follow/config (retained) -- a
+    third `text` entity per button: type an entity_id into it (e.g.
+    "sensor.bedroom_temperature") to say *which* entity this button
+    should display. Doesn't make this add-on watch anything itself --
+    see the akp05/entity_update note below for why, and how values
+    actually get here.
   - akp05/status -- retained "online"/"offline" (MQTT last-will), used
     as every entity's availability topic.
   - akp05/event/<id> -- NOT retained, JSON {"event_type": "pressed"}
@@ -50,21 +63,35 @@ What gets published:
   - akp05/event -- NOT retained, plain "<event_type>:<object_id>", feeds
     only the device_automation triggers (which match a raw payload
     string, not a JSON field, hence the separate topic/format).
-  - akp05/button_<n>/icon/state -- retained, echoes back the icon name
-    that's actually showing, but ONLY on a successful render -- an
-    invalid name is silently rejected rather than echoed, so the text
-    field just won't change to a value that didn't actually work.
+  - akp05/button_<n>/icon/state, .../text/state, .../follow/state --
+    retained, echo back whatever was actually set. icon/state only
+    updates on a successful render (an unrecognized MDI name is
+    silently rejected rather than echoed, the only feedback an MQTT
+    text entity can give); text/follow always echo since there's
+    nothing to validate.
 
 What it subscribes to:
   - akp05/power/set, akp05/brightness/set -- the light entity's own
     command topics ("ON"/"OFF" and "0".."100" respectively).
-  - akp05/button_<n>/icon/set -- the icon text entities' command topic;
-    empty string clears that button instead.
+  - akp05/button_<n>/icon/set, .../text/set, .../follow/set -- the three
+    text entities' command topics above; empty string clears/unlinks.
+  - akp05/entity_update -- JSON {"entity_id": ..., "text": ...}, NOT
+    published by this add-on -- fed by a shared automation
+    (text_monitor_automation_example.yaml at the repo root), forwarding
+    whichever entities you want available. This add-on never watches
+    Home Assistant's own state itself: an earlier version tried that
+    in-process (a "linked entity" text entity, watching Home Assistant's
+    Core API directly via a websocket) and it was pulled back out after
+    never being reliably confirmed working end to end. This is the
+    MQTT-only replacement -- one shared automation instead of a
+    per-add-on Core API connection, using only the MQTT path already
+    confirmed solid. On receipt, routes the text to whichever button(s)
+    currently have that entity_id set via .../follow/set.
   - akp05/cmd -- JSON commands for things that don't map to a single
     entity: raw images (there's no MQTT entity type for uploading a
     file from the UI, so this stays automation/script-only), strip
-    images, clearing, display_off/display_on. See the add-on's README
-    for the payload shapes; call these from automations with the
+    images, clearing, display_off/display_on, set_text. See the add-on's
+    README for the payload shapes; call these from automations with the
     mqtt.publish service.
 
 akp05/cmd's display_off/display_on are a deliberate pair, separate from
@@ -73,19 +100,14 @@ only (see above), while display_off actually blacks the screen (brightness
 alone doesn't -- LIG is backlight/PWM only, content stays faintly visible
 at 0%, confirmed in akp05_set_brightness.py's docstring) by also wiping
 every button/strip image, and display_on is the new way back -- restores
-brightness and re-renders everything that was showing, which previously
-needed a full add-on restart to get back (connect_device()'s own restore
-logic, now also reachable on demand).
+brightness and re-renders everything that was showing (icons and text
+values alike), which previously needed a full add-on restart to get back
+(connect_device()'s own restore logic, now also reachable on demand).
 
-For syncing a button's icon to an entity's on/off state (green/red),
-use an automation triggered on that entity's state, calling the
-akp05/cmd set_icon action with the appropriate "state" -- see
-icon_sync_automation_example.yaml at the repo root. An earlier version
-of this add-on tried doing that in-process instead (a "linked entity"
-text entity per button, watched via Home Assistant's own Core API) --
-pulled back out since it needed a real Core API connection to debug
-and wasn't reliably confirmed working; the automation route is simpler
-and uses only the MQTT path already confirmed solid.
+For syncing a button's icon to an entity's on/off state (green/red)
+rather than a text value, use an automation triggered on that entity's
+state, calling the akp05/cmd set_icon action with the appropriate
+"state" -- see icon_sync_automation_example.yaml at the repo root.
 """
 
 import base64
@@ -113,7 +135,7 @@ from akp05_device import (
     send_commands,
     upload_image,
 )
-from akp05_icons import build_icon
+from akp05_icons import build_icon, build_text
 
 OPTIONS_PATH = "/data/options.json"
 DEVICE_ID = "akp05"
@@ -143,7 +165,40 @@ def _icon_state_topic(button: int) -> str:
 # writable screen -- encoders don't, so this is buttons 1-10 only)
 ICON_SET_TOPICS = {_icon_set_topic(button): button for button in range(1, 11)}
 
+
+def _text_set_topic(button: int) -> str:
+    return f"{DEVICE_ID}/button_{button}/text/set"
+
+
+def _text_state_topic(button: int) -> str:
+    return f"{DEVICE_ID}/button_{button}/text/state"
+
+
+TEXT_SET_TOPICS = {_text_set_topic(button): button for button in range(1, 11)}
+
+
+def _follow_set_topic(button: int) -> str:
+    return f"{DEVICE_ID}/button_{button}/follow/set"
+
+
+def _follow_state_topic(button: int) -> str:
+    return f"{DEVICE_ID}/button_{button}/follow/state"
+
+
+FOLLOW_SET_TOPICS = {_follow_set_topic(button): button for button in range(1, 11)}
+
+# Published by a *shared* automation (text_monitor_automation_example.yaml),
+# not by this add-on -- the add-on deliberately doesn't watch entities
+# itself (that was tried as "linked entity"/HAWatcher, pulled back out
+# for being unreliable to confirm working). One automation forwards
+# whichever entities you want available to follow; this add-on just
+# routes {"entity_id": ..., "text": ...} to whichever button(s) currently
+# follow that entity_id.
+ENTITY_UPDATE_TOPIC = f"{DEVICE_ID}/entity_update"
+
 ICONS_PATH = "/data/button_icons.json"
+TEXTS_PATH = "/data/button_texts.json"
+FOLLOWS_PATH = "/data/button_follows.json"
 
 
 def _load_json(path: str, default):
@@ -287,6 +342,41 @@ def _icon_discovery_payload(button: int) -> dict:
     }
 
 
+def _text_discovery_payload(button: int) -> dict:
+    # A third MQTT `text` entity per button: pushes an already-formatted
+    # string (e.g. "21.4°C") straight to the screen via akp05_icons.build_text
+    # (Roboto, auto-shrunk to fit) -- useful directly from an automation/
+    # script for one-off values, and it's what entity_update (below)
+    # renders through for anything a button is following.
+    return {
+        "name": f"Button {button} Text",
+        "unique_id": f"{DEVICE_ID}_button_{button}_text",
+        "command_topic": _text_set_topic(button),
+        "state_topic": _text_state_topic(button),
+        "icon": "mdi:format-text",
+        "availability_topic": STATUS_TOPIC,
+        "device": DEVICE_INFO,
+    }
+
+
+def _follow_discovery_payload(button: int) -> dict:
+    # Configures *which* entity_id this button follows -- just the
+    # mapping, typed here once. The actual values come from
+    # entity_update, published by a shared automation, not from this
+    # add-on watching Home Assistant itself (see module docstring for
+    # why). Independent of the Icon/Text entities -- whichever one a
+    # button last received a value through is what's currently showing.
+    return {
+        "name": f"Button {button} Follow Entity",
+        "unique_id": f"{DEVICE_ID}_button_{button}_follow",
+        "command_topic": _follow_set_topic(button),
+        "state_topic": _follow_state_topic(button),
+        "icon": "mdi:eye-outline",
+        "availability_topic": STATUS_TOPIC,
+        "device": DEVICE_INFO,
+    }
+
+
 def publish_discovery(client: mqtt.Client):
     client.publish(
         f"{DISCOVERY_PREFIX}/light/{DEVICE_ID}/brightness/config",
@@ -297,6 +387,16 @@ def publish_discovery(client: mqtt.Client):
         client.publish(
             f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/button_{button}_icon/config",
             json.dumps(_icon_discovery_payload(button)),
+            retain=True,
+        )
+        client.publish(
+            f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/button_{button}_text/config",
+            json.dumps(_text_discovery_payload(button)),
+            retain=True,
+        )
+        client.publish(
+            f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/button_{button}_follow/config",
+            json.dumps(_follow_discovery_payload(button)),
             retain=True,
         )
     for object_id, event_types, device_class in _event_entities():
@@ -332,27 +432,39 @@ class Bridge:
         self.device = None
         self.brightness = 50
         self._last_nonzero_brightness = 50
-        # Persisted across restarts: last icon name set per button.
+        # Persisted across restarts. A button shows an icon OR a text
+        # value, never both -- set_icon/set_text each clear the other's
+        # entry for that button, so at most one of these two dicts has
+        # any given button in it at a time.
         self.button_icons: dict[int, str] = {int(k): v for k, v in _load_json(ICONS_PATH, {}).items()}
+        self.button_texts: dict[int, str] = {int(k): v for k, v in _load_json(TEXTS_PATH, {}).items()}
+        # Which entity_id (if any) each button follows -- just the
+        # mapping; entity_update (fed by a shared automation) is what
+        # actually delivers values for these.
+        self.button_follows: dict[int, str] = {int(k): v for k, v in _load_json(FOLLOWS_PATH, {}).items()}
 
     def connect_device(self):
         self.device = connect(self._on_report, full_init=True)
         self.publish_state()
-        self._restore_button_icons()
+        self._restore_button_displays()
 
-    def _restore_button_icons(self):
+    def _restore_button_displays(self):
         """full_init wipes every button's screen (CLE) on every connect
         -- including a plain add-on restart, not just a fresh install --
-        but nothing was re-uploading whatever icon each button is
-        supposed to show, so restarting silently blanked them until the
-        icon entity's value was changed again (which is the only thing
-        that actually re-triggers set_icon). Re-render everything we
-        remember."""
+        but nothing was re-uploading whatever each button is supposed to
+        show, so restarting silently blanked them until something set a
+        new value (the only thing that actually re-triggers a render).
+        Re-render everything we remember, icons and text values alike."""
         for button, icon in list(self.button_icons.items()):
             try:
                 self.set_icon(button, icon, None)
             except Exception as exc:  # noqa: BLE001 - one bad icon shouldn't block the rest
                 print(f"Couldn't restore icon for button {button} ({icon!r}): {exc}")
+        for button, text in list(self.button_texts.items()):
+            try:
+                self.set_text(button, text)
+            except Exception as exc:  # noqa: BLE001 - one bad value shouldn't block the rest
+                print(f"Couldn't restore text for button {button} ({text!r}): {exc}")
 
     def _out_len(self) -> int:
         return self.device.hid_caps.output_report_byte_length
@@ -392,11 +504,11 @@ class Bridge:
 
     def display_on(self):
         """Pairs with clear_all/display_off: restores brightness and
-        re-renders every button's remembered icon (reuses the same
-        restore logic connect_device() already uses after a reconnect --
-        this just triggers it on demand instead)."""
+        re-renders every button's remembered icon or text value (reuses
+        the same restore logic connect_device() already uses after a
+        reconnect -- this just triggers it on demand instead)."""
         self.set_brightness(self._last_nonzero_brightness)
-        self._restore_button_icons()
+        self._restore_button_displays()
 
     def set_button_image(self, button: int, jpeg_bytes: bytes):
         upload_image(self.device, BUTTON_TO_WIRE_KEY[button], jpeg_bytes)
@@ -427,6 +539,23 @@ class Bridge:
         self.set_button_image(button, encode_image(img, img.size))
         self.button_icons[button] = icon
         _save_json(ICONS_PATH, self.button_icons)
+        if self.button_texts.pop(button, None) is not None:
+            _save_json(TEXTS_PATH, self.button_texts)
+
+    def set_text(self, button: int, text: str):
+        img = build_text(text)
+        self.set_button_image(button, encode_image(img, img.size))
+        self.button_texts[button] = text
+        _save_json(TEXTS_PATH, self.button_texts)
+        if self.button_icons.pop(button, None) is not None:
+            _save_json(ICONS_PATH, self.button_icons)
+
+    def set_follow(self, button: int, entity_id: str):
+        if entity_id:
+            self.button_follows[button] = entity_id
+        else:
+            self.button_follows.pop(button, None)
+        _save_json(FOLLOWS_PATH, self.button_follows)
 
     @staticmethod
     def _classify(key: int, state: int):
@@ -473,6 +602,8 @@ def _handle_cmd(bridge: Bridge, payload: dict):
         bridge.clear_button(int(payload["button"]))
     elif action == "set_icon":
         bridge.set_icon(int(payload["button"]), payload["icon"], payload.get("state"))
+    elif action == "set_text":
+        bridge.set_text(int(payload["button"]), payload["text"])
     elif action == "set_image":
         img = _decode_image(payload["image_b64"])
         bridge.set_button_image(int(payload["button"]), encode_image(img, BUTTON_IMAGE_SIZE))
@@ -509,7 +640,12 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     client.subscribe(POWER_SET_TOPIC)
     client.subscribe(BRIGHTNESS_SET_TOPIC)
     client.subscribe(CMD_TOPIC)
+    client.subscribe(ENTITY_UPDATE_TOPIC)
     for topic in ICON_SET_TOPICS:
+        client.subscribe(topic)
+    for topic in TEXT_SET_TOPICS:
+        client.subscribe(topic)
+    for topic in FOLLOW_SET_TOPICS:
         client.subscribe(topic)
     publish_discovery(client)
     client.publish(STATUS_TOPIC, "online", retain=True)
@@ -539,6 +675,26 @@ def on_message(client, userdata, msg):
             # simply won't update to a name that didn't actually render,
             # which is the only feedback an MQTT text entity can give.
             client.publish(_icon_state_topic(button), icon, retain=True)
+        elif msg.topic in TEXT_SET_TOPICS:
+            button = TEXT_SET_TOPICS[msg.topic]
+            text = msg.payload.decode().strip()
+            if text:
+                bridge.set_text(button, text)
+            else:
+                bridge.clear_button(button)
+            client.publish(_text_state_topic(button), text, retain=True)
+        elif msg.topic in FOLLOW_SET_TOPICS:
+            button = FOLLOW_SET_TOPICS[msg.topic]
+            entity_id = msg.payload.decode().strip()
+            bridge.set_follow(button, entity_id)
+            client.publish(_follow_state_topic(button), entity_id, retain=True)
+        elif msg.topic == ENTITY_UPDATE_TOPIC:
+            update = json.loads(msg.payload.decode())
+            entity_id, text = update.get("entity_id"), update.get("text", "")
+            for button, followed in list(bridge.button_follows.items()):
+                if followed == entity_id:
+                    bridge.set_text(button, text)
+                    client.publish(_text_state_topic(button), text, retain=True)
     except Exception as exc:  # noqa: BLE001 - a bad command shouldn't kill the bridge
         print(f"Error handling message on {msg.topic}: {exc}")
 

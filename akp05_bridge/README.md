@@ -103,7 +103,8 @@ automatically once an MQTT broker add-on is running, no setup needed.
    "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
    "Add Integration" step needed) with a **Brightness** entity, 18 event
    entities (one per button, encoder button, and encoder twist pair),
-   and 10 **Button N Icon** text entities.
+   and 3 text entities per button (**Icon**, **Text**, **Follow Entity**
+   — 30 total).
 
 ## Using it
 
@@ -133,16 +134,24 @@ automatically once an MQTT broker add-on is running, no setup needed.
   by setting its text to empty. A name that doesn't exist just won't
   take — check the add-on's **Log** tab if a button doesn't update,
   that's the only place an invalid name gets reported.
-- **Coloring an icon by an entity's on/off state (green/red)** — not a
-  built-in entity here (that was tried — a "linked entity" text entity
-  per button watching Home Assistant's own Core API directly — and
-  pulled back out; it needed a whole separate API connection to debug
-  and wasn't reliably confirmed working). Use an automation instead,
-  triggered on the entity's state, calling the `akp05/cmd` `set_icon`
-  action below with the right `state` — see
-  `icon_sync_automation_example.yaml` at the repo root for a working
-  template. More moving parts than a single text entity, but it only
-  depends on the MQTT path already confirmed solid.
+- **Showing a live value on a button — "text monitor"** — each button
+  also has a **Button N Text** entity (push an already-formatted string
+  like `21.4°C` straight to the screen, in [Roboto](https://fonts.google.com/specimen/Roboto)
+  — the same font Home Assistant's own frontend uses, auto-shrunk to
+  fit) and a **Button N Follow Entity** entity (type an entity_id, e.g.
+  `sensor.bedroom_temperature`, to say which entity this button should
+  track). Follow Entity is *configuration only* — the add-on doesn't
+  watch Home Assistant's state itself (that's the "linked entity"
+  approach that got pulled back out for being unreliable to confirm
+  working). Values arrive via one shared automation instead — see
+  `text_monitor_automation_example.yaml` at the repo root; add an entity
+  to its trigger list (and the matching startup-sync list) for each one
+  you want available to follow. A button shows an icon OR a text value,
+  never both — whichever you set most recently wins.
+- **Coloring an icon by an entity's on/off state (green/red)** — same
+  shared-automation philosophy, different action: trigger on the
+  entity's state, call the `akp05/cmd` `set_icon` action below with the
+  right `state` — see `icon_sync_automation_example.yaml`.
 - **Raw images/clearing/strip** — no MQTT entity type exists for
   uploading a file from the UI, so these stay plain MQTT commands. Call
   them from an automation with the built-in `mqtt.publish` service,
@@ -152,6 +161,9 @@ automatically once an MQTT broker add-on is running, no setup needed.
   # (the Button N Icon text entities above call this same code path,
   # just without the state coloring -- use this form when you want that)
   {"action": "set_icon", "button": 3, "icon": "floor-lamp-outline", "state": "on"}
+
+  # push a text value (same code path as the Button N Text entity)
+  {"action": "set_text", "button": 3, "text": "21.4°C"}
 
   # raw base64 PNG/JPEG on a button
   {"action": "set_image", "button": 3, "image_b64": "..."}
@@ -192,6 +204,11 @@ automatically once an MQTT broker add-on is running, no setup needed.
 | `akp05/brightness/state`     | publishes | `0`-`100` (retained)                  |
 | `akp05/button_<n>/icon/set`  | subscribes| MDI icon name, e.g. `floor-lamp-outline`; empty clears the button. `<n>` is `1`-`10`. |
 | `akp05/button_<n>/icon/state`| publishes | Echoes the name back, retained, only on a successful render |
+| `akp05/button_<n>/text/set`  | subscribes| Already-formatted string, e.g. `21.4°C`; empty clears the button. |
+| `akp05/button_<n>/text/state`| publishes | Echoes the value back, retained |
+| `akp05/button_<n>/follow/set`| subscribes| An entity_id, e.g. `sensor.bedroom_temperature`; empty unlinks. |
+| `akp05/button_<n>/follow/state`| publishes | Echoes the entity_id back, retained |
+| `akp05/entity_update`        | subscribes| `{"entity_id": ..., "text": ...}` -- fed by a shared automation, not by this add-on |
 | `akp05/cmd`                  | subscribes| JSON, see above                       |
 
 All of this is namespaced under `akp05/` and the MQTT discovery configs

@@ -222,6 +222,12 @@ An "Ajazz AKP05" device then appears under Settings → Devices & Services
   **Button N Icon** text entity, type any [MDI](https://pictogrammers.com/library/mdi/)
   name into it and it renders and uploads immediately, no automation
   needed.
+- **Showing a live value on a button** — each button also has a
+  **Button N Text** entity (push an already-formatted string, rendered
+  in Roboto) and a **Button N Follow Entity** entity (which entity_id to
+  track). Follow Entity is configuration only, fed by one shared
+  automation — see
+  [`text_monitor_automation_example.yaml`](text_monitor_automation_example.yaml).
 - **Showing an entity's on/off state on a button** — via an automation
   triggered on that entity's state, calling `akp05/cmd`'s `set_icon`
   action with the matching color — see

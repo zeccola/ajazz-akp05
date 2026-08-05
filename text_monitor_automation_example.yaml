@@ -1,0 +1,51 @@
+# Feeds akp05/entity_update -- the add-on itself never watches Home
+# Assistant's own state (that was tried once as a "linked entity"
+# feature, watching the Core API directly, and pulled back out for
+# being unreliable to confirm working). Instead this one automation
+# forwards whatever entities you want available, and the add-on routes
+# each update to whichever button(s) currently have that entity_id set
+# in their "Button N Follow Entity" field.
+#
+# To add an entity: add it to BOTH the trigger list and the startup
+# repeat's list below (kept as two lists rather than one so the startup
+# sync doesn't depend on trigger-matching machinery -- simple find/
+# replace when you add one).
+alias: Ajazz text monitor forwarder
+description: Forwards entity values to akp05/entity_update for any button following them
+triggers:
+  - trigger: state
+    entity_id:
+      - sensor.bedroom_temperature
+      - sensor.living_room_temperature
+    id: entity_change
+  - trigger: homeassistant
+    event: start
+    id: startup
+conditions: []
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: entity_change
+        sequence:
+          - action: mqtt.publish
+            data:
+              topic: akp05/entity_update
+              payload: >-
+                {"entity_id": "{{ trigger.entity_id }}", "text": "{{ trigger.to_state.state }}{{ trigger.to_state.attributes.unit_of_measurement | default('') }}"}
+      - conditions:
+          - condition: trigger
+            id: startup
+        sequence:
+          - repeat:
+              for_each:
+                - sensor.bedroom_temperature
+                - sensor.living_room_temperature
+              sequence:
+                - action: mqtt.publish
+                  data:
+                    topic: akp05/entity_update
+                    payload: >-
+                      {"entity_id": "{{ repeat.item }}", "text": "{{ states(repeat.item) }}{{ state_attr(repeat.item, 'unit_of_measurement') | default('') }}"}
+    default: []
+mode: queued
