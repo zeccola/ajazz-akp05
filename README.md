@@ -242,6 +242,11 @@ An "Ajazz AKP05" device then appears under Settings → Devices & Services
 - **Brightness** — a normal light entity. Turning it off dims to 0%
   *without* touching any images, unlike the CLI's `off` (which also
   wipes everything).
+- **Screen off / on** — **Display Off** and **Display On** button
+  entities. Off actually blacks the panel (0% brightness plus wiping
+  every image — brightness 0 alone leaves content faintly visible);
+  On restores brightness and re-renders every remembered icon/text.
+  Tap them on a dashboard or call `button.press` from an automation.
 - **Setting a button's icon** — directly in the UI: each button has a
   **Button N Icon** text entity, type any [MDI](https://pictogrammers.com/library/mdi/)
   name into it and it renders and uploads immediately, no automation

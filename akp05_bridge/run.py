@@ -75,6 +75,13 @@ What gets published:
     a live card on the strip -- but any URL serving an image works.
     Text, URL, and raw images are mutually exclusive; setting any one
     forgets the others.
+  - homeassistant/button/akp05/display_off/config and .../display_on/
+    config (retained) -- two MQTT `button` entities, "Display Off" and
+    "Display On", pressing exactly what akp05/cmd's display_off /
+    display_on actions do (see below), so screen-off/on is a plain
+    entity you can tap on a dashboard, use in a script/automation
+    action via button.press, or expose to a voice assistant -- no
+    mqtt.publish JSON needed for the most common use.
   - akp05/status -- retained "online"/"offline" (MQTT last-will), used
     as every entity's availability topic.
   - akp05/event/<id> -- NOT retained, JSON {"event_type": "pressed"}
@@ -99,6 +106,8 @@ What it subscribes to:
     empty string clears the strip to black.
   - akp05/strip/url/set -- the Strip URL entity's command topic; empty
     string leaves URL mode (stops the poller repainting).
+  - akp05/display/set -- the two Display buttons' shared command topic:
+    "OFF" runs display_off, "ON" runs display_on.
   - akp05/entity_update -- JSON {"entity_id": ..., "text": ...}, NOT
     published by this add-on -- fed by a shared automation
     (text_monitor_automation_example.yaml at the repo root), forwarding
@@ -229,6 +238,13 @@ STRIP_TEXT_SET_TOPIC = f"{DEVICE_ID}/strip/text/set"
 STRIP_TEXT_STATE_TOPIC = f"{DEVICE_ID}/strip/text/state"
 STRIP_URL_SET_TOPIC = f"{DEVICE_ID}/strip/url/set"
 STRIP_URL_STATE_TOPIC = f"{DEVICE_ID}/strip/url/state"
+
+# Shared by the Display Off / Display On button entities -- each presses
+# a different payload onto this one topic. Stateless (MQTT button
+# entities have no state topic), so nothing is echoed back.
+DISPLAY_SET_TOPIC = f"{DEVICE_ID}/display/set"
+DISPLAY_OFF_PAYLOAD = "OFF"
+DISPLAY_ON_PAYLOAD = "ON"
 
 # Published by a *shared* automation (text_monitor_automation_example.yaml),
 # not by this add-on -- the add-on deliberately doesn't watch entities
@@ -461,10 +477,43 @@ def _strip_text_discovery_payload() -> dict:
     }
 
 
+def _display_button_discovery_payload(object_id: str, name: str, payload: str, icon: str) -> dict:
+    # MQTT `button` entities for screen off/on -- the akp05/cmd
+    # display_off/display_on actions were only reachable via a
+    # mqtt.publish JSON payload, which is fine inside an automation but
+    # awkward as a dashboard tile or a voice-assistant target. A button
+    # entity is the natural HA shape for a fire-and-forget action: no
+    # state, just press. Both share one command topic and differ only
+    # in payload_press (see on_message).
+    return {
+        "name": name,
+        "unique_id": f"{DEVICE_ID}_{object_id}",
+        "command_topic": DISPLAY_SET_TOPIC,
+        "payload_press": payload,
+        "icon": icon,
+        "availability_topic": STATUS_TOPIC,
+        "device": DEVICE_INFO,
+    }
+
+
 def publish_discovery(client: mqtt.Client):
     client.publish(
         f"{DISCOVERY_PREFIX}/light/{DEVICE_ID}/brightness/config",
         json.dumps(_light_discovery_payload()),
+        retain=True,
+    )
+    client.publish(
+        f"{DISCOVERY_PREFIX}/button/{DEVICE_ID}/display_off/config",
+        json.dumps(_display_button_discovery_payload(
+            "display_off", "Display Off", DISPLAY_OFF_PAYLOAD, "mdi:monitor-off",
+        )),
+        retain=True,
+    )
+    client.publish(
+        f"{DISCOVERY_PREFIX}/button/{DEVICE_ID}/display_on/config",
+        json.dumps(_display_button_discovery_payload(
+            "display_on", "Display On", DISPLAY_ON_PAYLOAD, "mdi:monitor",
+        )),
         retain=True,
     )
     for button in range(1, 11):
@@ -898,6 +947,7 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         client.subscribe(topic)
     client.subscribe(STRIP_TEXT_SET_TOPIC)
     client.subscribe(STRIP_URL_SET_TOPIC)
+    client.subscribe(DISPLAY_SET_TOPIC)
     publish_discovery(client)
     client.publish(STATUS_TOPIC, "online", retain=True)
     bridge = bridge_holder.get("bridge")
@@ -914,6 +964,17 @@ def on_message(client, userdata, msg):
             bridge.set_brightness(int(msg.payload.decode()))
         elif msg.topic == CMD_TOPIC:
             _handle_cmd(bridge, json.loads(msg.payload.decode()))
+        elif msg.topic == DISPLAY_SET_TOPIC:
+            # The Display Off / Display On button entities -- same code
+            # paths as akp05/cmd's display_off/display_on, just reached
+            # by a press instead of a JSON payload.
+            payload = msg.payload.decode().strip().upper()
+            if payload == DISPLAY_OFF_PAYLOAD:
+                bridge.clear_all()
+            elif payload == DISPLAY_ON_PAYLOAD:
+                bridge.display_on()
+            else:
+                print(f"Unknown {DISPLAY_SET_TOPIC} payload: {payload!r}")
         elif msg.topic in ICON_SET_TOPICS:
             button = ICON_SET_TOPICS[msg.topic]
             icon = msg.payload.decode().strip()

@@ -116,7 +116,7 @@ automatically once an MQTT broker add-on is running, no setup needed.
    entities (one per button, encoder button, and encoder twist pair),
    and 3 text entities per button (**Icon**, **Text**, **Follow Entity**
    — 30 total), plus **Strip Text** and **Strip URL** entities for the
-   touch strip.
+   touch strip, and **Display Off** / **Display On** button entities.
 
 ## Using it
 
@@ -137,6 +137,16 @@ automatically once an MQTT broker add-on is running, no setup needed.
   `akp05_set_brightness.py off`. Deliberately kept separate (see
   `display_off`/`display_on` below) so toggling this in a routine
   automation can't accidentally erase your icons.
+- **Turning the screen off and back on** — two button entities,
+  **Display Off** and **Display On** (`button.ajazz_akp05_display_off`
+  / `button.ajazz_akp05_display_on`). Off dims to 0% *and* wipes every
+  button/strip image to actual black — brightness 0 alone leaves the
+  content faintly visible on this panel. On restores the previous
+  brightness and re-renders everything the add-on remembers (icons,
+  text values, strip text/URL). Put them on a dashboard, call
+  `button.press` from a script/automation, or expose them to a voice
+  assistant — they're the entity form of the `display_off`/`display_on`
+  commands below, same code path.
 - **Setting a button's icon — directly in the UI, no automation needed**
   — each button has a **Button N Icon** text entity (Settings → Devices
   & Services → MQTT → Ajazz AKP05, or just search for it). Click it,
@@ -209,12 +219,13 @@ automatically once an MQTT broker add-on is running, no setup needed.
   # image to actual black (brightness alone doesn't get you there; the
   # panel stays faintly visible at 0%). "clear_all" is the same action
   # under its older name, kept working -- use whichever reads better in
-  # your automation.
+  # your automation. Same thing as pressing the Display Off button entity.
   {"action": "display_off"}
 
   # ...and back on: restores brightness and re-renders every button's
   # remembered icon (nothing else currently does that in one call --
-  # otherwise it needs a full add-on restart to come back)
+  # otherwise it needs a full add-on restart to come back). Same thing
+  # as pressing the Display On button entity.
   {"action": "display_on"}
 
   # whole touch strip (800x112, auto-resized) or one of its 200px chunks
@@ -239,7 +250,8 @@ automatically once an MQTT broker add-on is running, no setup needed.
   ```
 
   A common use: an automation on `sun.sun`/a schedule/an `input_boolean`
-  calling `display_off` at night and `display_on` in the morning.
+  pressing **Display Off** at night and **Display On** in the morning
+  (or publishing the equivalent `display_off`/`display_on` commands).
 
 ## Topic reference
 
@@ -258,6 +270,11 @@ automatically once an MQTT broker add-on is running, no setup needed.
 | `akp05/button_<n>/text/state`| publishes | Echoes the value back, retained |
 | `akp05/button_<n>/follow/set`| subscribes| An entity_id, e.g. `sensor.bedroom_temperature`; empty unlinks. |
 | `akp05/button_<n>/follow/state`| publishes | Echoes the entity_id back, retained |
+| `akp05/strip/text/set`       | subscribes| Text for the whole strip; empty clears it to black. |
+| `akp05/strip/text/state`     | publishes | Echoes the text back, retained |
+| `akp05/strip/url/set`        | subscribes| Image URL to poll onto the strip; empty leaves URL mode. |
+| `akp05/strip/url/state`      | publishes | Echoes the URL back, retained |
+| `akp05/display/set`          | subscribes| `OFF` / `ON` -- what the Display Off / Display On buttons press; same as `display_off`/`display_on` on `akp05/cmd` |
 | `akp05/entity_update`        | subscribes| `{"entity_id": ..., "text": ...}` -- fed by a shared automation, not by this add-on |
 | `akp05/cmd`                  | subscribes| JSON, see above                       |
 
