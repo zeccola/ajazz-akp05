@@ -358,17 +358,24 @@ def build_bat_commands(wire_key: int, jpeg_bytes: bytes, total_len: int):
         yield buf
 
 
-def upload_image(device, wire_key: int, jpeg_bytes: bytes):
+def upload_image(device, wire_key: int, jpeg_bytes: bytes, brightness: int = 50):
     """Wake (without wiping other keys), clear just this wire-key, upload
     the image, commit. Uses the proven wake-up sequence, scoped so it
-    doesn't disturb other buttons/the strip."""
+    doesn't disturb other buttons/the strip.
+
+    brightness: the wake-up sequence includes a LIG (brightness) command
+    -- it sets the panel's brightness as a side effect of every upload.
+    Long-running callers that track brightness (the add-on) must pass
+    the current value, or every image refresh silently resets the panel
+    to this default (that was a real, reported bug: "keeps going back
+    to 50%"). One-shot CLI scripts can leave it."""
     out_len = device.hid_caps.output_report_byte_length
     send_commands(
         device,
         [
             crt_command("DIS", [], out_len),
             crt_command("LIG", [0x00, 0x00], out_len),
-            crt_command("LIG", [0x00, 0x00, 50], out_len),
+            crt_command("LIG", [0x00, 0x00, max(0, min(100, int(brightness)))], out_len),
             crt_command("CLE", [0x00, 0x00, 0x00, wire_key], out_len),
             crt_command("STP", [], out_len),
         ],

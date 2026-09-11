@@ -110,13 +110,31 @@ automatically once an MQTT broker add-on is running, no setup needed.
      "Device reconnected". `akp05/status` also correctly reports
      `offline` for that window, so entities show unavailable rather than
      silently stale.
+   - **"No hidraw device found" repeating forever even though the AKP05
+     is plugged into the HA host and shows up under Settings → System →
+     Hardware** — seen once on real hardware: every control in HA looked
+     dead (icons/text/brightness all stuck on old values) while button
+     presses still worked. Unplugging the AKP05, waiting 5 seconds,
+     plugging it back in, and restarting the add-on fixed it outright.
+     The log now says so itself after a minute of retries. Since 0.10.0
+     the add-on also connects to MQTT *before* looking for the device,
+     so while it's missing `akp05/status` reads `offline` and the
+     entities show unavailable instead of looking healthy.
+   - **Brightness keeps snapping back to 50% on its own** — this was a
+     real bug (fixed in 0.10.0): the image-upload sequence sends a
+     brightness command as part of waking the panel, and it was
+     hard-coded to 50%, so every text/icon refresh (e.g. a sensor
+     value updating) silently reset it. It now sends whatever the
+     Brightness entity currently says.
+   - **The Log tab is empty or minutes behind** — fixed in 0.10.0
+     (Python was buffering its output inside the container).
 3. In Home Assistant: **Settings → Devices & Services → MQTT** — an
    "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
    "Add Integration" step needed) with a **Brightness** entity, 18 event
    entities (one per button, encoder button, and encoder twist pair),
-   and 3 text entities per button (**Icon**, **Text**, **Follow Entity**
-   — 30 total), plus **Strip Text** and **Strip URL** entities for the
-   touch strip, and **Display Off** / **Display On** button entities.
+   2 text entities per button (**Icon** and **Text** — 20 total), a
+   **Display** on/off switch, plus **Strip Text** and **Strip URL**
+   entities for the touch strip.
 
 ## Using it
 
@@ -137,16 +155,16 @@ automatically once an MQTT broker add-on is running, no setup needed.
   `akp05_set_brightness.py off`. Deliberately kept separate (see
   `display_off`/`display_on` below) so toggling this in a routine
   automation can't accidentally erase your icons.
-- **Turning the screen off and back on** — two button entities,
-  **Display Off** and **Display On** (`button.ajazz_akp05_display_off`
-  / `button.ajazz_akp05_display_on`). Off dims to 0% *and* wipes every
+- **Turning the screen off and back on** — the **Display** switch
+  (`switch.ajazz_akp05_display`). Off dims to 0% *and* wipes every
   button/strip image to actual black — brightness 0 alone leaves the
   content faintly visible on this panel. On restores the previous
   brightness and re-renders everything the add-on remembers (icons,
-  text values, strip text/URL). Put them on a dashboard, call
-  `button.press` from a script/automation, or expose them to a voice
-  assistant — they're the entity form of the `display_off`/`display_on`
-  commands below, same code path.
+  text values, strip text/URL). Put it on a dashboard, use
+  `switch.turn_on`/`switch.turn_off`/`switch.toggle` from a script or
+  automation, or expose it to a voice assistant — it's the entity form
+  of the `display_off`/`display_on` commands below, same code path,
+  and its state stays correct across a Home Assistant restart.
 - **Setting a button's icon — directly in the UI, no automation needed**
   — each button has a **Button N Icon** text entity (Settings → Devices
   & Services → MQTT → Ajazz AKP05, or just search for it). Click it,
@@ -157,19 +175,17 @@ automatically once an MQTT broker add-on is running, no setup needed.
   take — check the add-on's **Log** tab if a button doesn't update,
   that's the only place an invalid name gets reported.
 - **Showing a live value on a button — "text monitor"** — each button
-  also has a **Button N Text** entity (push an already-formatted string
+  also has a **Button N Text** entity: push an already-formatted string
   like `21.4°C` straight to the screen, in [Roboto](https://fonts.google.com/specimen/Roboto)
   — the same font Home Assistant's own frontend uses, auto-shrunk to
-  fit) and a **Button N Follow Entity** entity (type an entity_id, e.g.
-  `sensor.bedroom_temperature`, to say which entity this button should
-  track). Follow Entity is *configuration only* — the add-on doesn't
-  watch Home Assistant's state itself (that's the "linked entity"
-  approach that got pulled back out for being unreliable to confirm
-  working). Values arrive via one shared automation instead — see
-  `text_monitor_automation_example.yaml` at the repo root; add an entity
-  to its trigger list (and the matching startup-sync list) for each one
-  you want available to follow. A button shows an icon OR a text value,
-  never both — whichever you set most recently wins.
+  fit. Type into it directly, or for a sensor that should stay in sync,
+  a small automation: trigger on the sensor's state, action
+  `text.set_value` on `text.ajazz_akp05_button_N_text` — see
+  `text_monitor_automation_example.yaml` at the repo root. (The
+  per-button "Follow Entity" field and `akp05/entity_update` topic that
+  used to do this were removed in 0.10.0; the direct form is simpler.)
+  A button shows an icon OR a text value, never both — whichever you
+  set most recently wins.
 - **Text on the touch strip** — the **Strip Text** entity works exactly
   like a button's Text entity but renders across the whole 800x112
   strip: type into it in the UI, or drive it from an automation with
@@ -219,13 +235,13 @@ automatically once an MQTT broker add-on is running, no setup needed.
   # image to actual black (brightness alone doesn't get you there; the
   # panel stays faintly visible at 0%). "clear_all" is the same action
   # under its older name, kept working -- use whichever reads better in
-  # your automation. Same thing as pressing the Display Off button entity.
+  # your automation. Same thing as turning the Display switch off.
   {"action": "display_off"}
 
   # ...and back on: restores brightness and re-renders every button's
   # remembered icon (nothing else currently does that in one call --
   # otherwise it needs a full add-on restart to come back). Same thing
-  # as pressing the Display On button entity.
+  # as turning the Display switch on.
   {"action": "display_on"}
 
   # whole touch strip (800x112, auto-resized) or one of its 200px chunks
@@ -250,7 +266,7 @@ automatically once an MQTT broker add-on is running, no setup needed.
   ```
 
   A common use: an automation on `sun.sun`/a schedule/an `input_boolean`
-  pressing **Display Off** at night and **Display On** in the morning
+  turning the **Display** switch off at night and on in the morning
   (or publishing the equivalent `display_off`/`display_on` commands).
 
 ## Topic reference
@@ -268,14 +284,12 @@ automatically once an MQTT broker add-on is running, no setup needed.
 | `akp05/button_<n>/icon/state`| publishes | Echoes the name back, retained, only on a successful render |
 | `akp05/button_<n>/text/set`  | subscribes| Already-formatted string, e.g. `21.4°C`; empty clears the button. |
 | `akp05/button_<n>/text/state`| publishes | Echoes the value back, retained |
-| `akp05/button_<n>/follow/set`| subscribes| An entity_id, e.g. `sensor.bedroom_temperature`; empty unlinks. |
-| `akp05/button_<n>/follow/state`| publishes | Echoes the entity_id back, retained |
 | `akp05/strip/text/set`       | subscribes| Text for the whole strip; empty clears it to black. |
 | `akp05/strip/text/state`     | publishes | Echoes the text back, retained |
 | `akp05/strip/url/set`        | subscribes| Image URL to poll onto the strip; empty leaves URL mode. |
 | `akp05/strip/url/state`      | publishes | Echoes the URL back, retained |
-| `akp05/display/set`          | subscribes| `OFF` / `ON` -- what the Display Off / Display On buttons press; same as `display_off`/`display_on` on `akp05/cmd` |
-| `akp05/entity_update`        | subscribes| `{"entity_id": ..., "text": ...}` -- fed by a shared automation, not by this add-on |
+| `akp05/display/set`          | subscribes| `OFF` / `ON` -- the Display switch's command; same as `display_off`/`display_on` on `akp05/cmd` |
+| `akp05/display/state`        | publishes | `ON` / `OFF` (retained) -- what the Display switch shows |
 | `akp05/cmd`                  | subscribes| JSON, see above                       |
 
 All of this is namespaced under `akp05/` and the MQTT discovery configs

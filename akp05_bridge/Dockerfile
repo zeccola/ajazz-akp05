@@ -3,6 +3,11 @@ FROM $BUILD_FROM
 
 WORKDIR /app
 
+# Otherwise Python block-buffers stdout when it isn't a TTY, and the
+# add-on's Log tab lags minutes behind (or never shows "Connected to
+# MQTT broker" at all) -- which made a working add-on look stuck.
+ENV PYTHONUNBUFFERED=1
+
 COPY requirements.txt .
 
 # Pillow needs jpeg/zlib/freetype at build time; if the platform's wheel

@@ -242,20 +242,19 @@ An "Ajazz AKP05" device then appears under Settings → Devices & Services
 - **Brightness** — a normal light entity. Turning it off dims to 0%
   *without* touching any images, unlike the CLI's `off` (which also
   wipes everything).
-- **Screen off / on** — **Display Off** and **Display On** button
-  entities. Off actually blacks the panel (0% brightness plus wiping
-  every image — brightness 0 alone leaves content faintly visible);
-  On restores brightness and re-renders every remembered icon/text.
-  Tap them on a dashboard or call `button.press` from an automation.
+- **Screen off / on** — the **Display** switch. Off actually blacks
+  the panel (0% brightness plus wiping every image — brightness 0
+  alone leaves content faintly visible); On restores brightness and
+  re-renders every remembered icon/text. Toggle it on a dashboard or
+  with `switch.turn_on`/`switch.turn_off` from an automation.
 - **Setting a button's icon** — directly in the UI: each button has a
   **Button N Icon** text entity, type any [MDI](https://pictogrammers.com/library/mdi/)
   name into it and it renders and uploads immediately, no automation
   needed.
 - **Showing a live value on a button** — each button also has a
   **Button N Text** entity (push an already-formatted string, rendered
-  in Roboto) and a **Button N Follow Entity** entity (which entity_id to
-  track). Follow Entity is configuration only, fed by one shared
-  automation — see
+  in Roboto). To keep it in sync with a sensor, an automation calling
+  `text.set_value` on it — see
   [`text_monitor_automation_example.yaml`](text_monitor_automation_example.yaml).
 - **Showing an entity's on/off state on a button** — via an automation
   triggered on that entity's state, calling `akp05/cmd`'s `set_icon`

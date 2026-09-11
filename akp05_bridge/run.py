@@ -50,12 +50,6 @@ What gets published:
     auto-shrunk to fit). A button shows an icon OR a text value, never
     both; setting one clears the other's remembered state for that
     button.
-  - homeassistant/text/akp05/button_<n>_follow/config (retained) -- a
-    third `text` entity per button: type an entity_id into it (e.g.
-    "sensor.bedroom_temperature") to say *which* entity this button
-    should display. Doesn't make this add-on watch anything itself --
-    see the akp05/entity_update note below for why, and how values
-    actually get here.
   - homeassistant/text/akp05/strip_text/config (retained) -- one more
     `text` entity, same idea as button_<n>_text but rendering to the
     full 800x112 touch strip (build_text with the strip's size --
@@ -75,13 +69,14 @@ What gets published:
     a live card on the strip -- but any URL serving an image works.
     Text, URL, and raw images are mutually exclusive; setting any one
     forgets the others.
-  - homeassistant/button/akp05/display_off/config and .../display_on/
-    config (retained) -- two MQTT `button` entities, "Display Off" and
-    "Display On", pressing exactly what akp05/cmd's display_off /
-    display_on actions do (see below), so screen-off/on is a plain
-    entity you can tap on a dashboard, use in a script/automation
-    action via button.press, or expose to a voice assistant -- no
-    mqtt.publish JSON needed for the most common use.
+  - homeassistant/switch/akp05/display/config (retained) -- one MQTT
+    `switch` entity, "Display": ON/OFF is exactly what akp05/cmd's
+    display_on / display_off actions do (see below), with the current
+    state echoed on akp05/display/state so it reads as a real toggle
+    on a dashboard, in a script/automation (switch.turn_on/off), or
+    via a voice assistant -- no mqtt.publish JSON needed for the most
+    common use. Replaced a pair of Display Off / Display On `button`
+    entities (0.9.1) -- a toggle with state is the more natural shape.
   - akp05/status -- retained "online"/"offline" (MQTT last-will), used
     as every entity's availability topic.
   - akp05/event/<id> -- NOT retained, JSON {"event_type": "pressed"}
@@ -89,37 +84,31 @@ What gets published:
   - akp05/event -- NOT retained, plain "<event_type>:<object_id>", feeds
     only the device_automation triggers (which match a raw payload
     string, not a JSON field, hence the separate topic/format).
-  - akp05/button_<n>/icon/state, .../text/state, .../follow/state,
-    akp05/strip/text/state --
-    retained, echo back whatever was actually set. icon/state only
+  - akp05/button_<n>/icon/state, .../text/state, akp05/strip/text/state
+    -- retained, echo back whatever was actually set. icon/state only
     updates on a successful render (an unrecognized MDI name is
     silently rejected rather than echoed, the only feedback an MQTT
-    text entity can give); text/follow always echo since there's
-    nothing to validate.
+    text entity can give); text always echoes since there's nothing to
+    validate.
 
 What it subscribes to:
   - akp05/power/set, akp05/brightness/set -- the light entity's own
     command topics ("ON"/"OFF" and "0".."100" respectively).
-  - akp05/button_<n>/icon/set, .../text/set, .../follow/set -- the three
-    text entities' command topics above; empty string clears/unlinks.
+  - akp05/button_<n>/icon/set, .../text/set -- the two text entities'
+    command topics above; empty string clears the button.
   - akp05/strip/text/set -- the Strip Text entity's command topic;
     empty string clears the strip to black.
   - akp05/strip/url/set -- the Strip URL entity's command topic; empty
     string leaves URL mode (stops the poller repainting).
-  - akp05/display/set -- the two Display buttons' shared command topic:
-    "OFF" runs display_off, "ON" runs display_on.
-  - akp05/entity_update -- JSON {"entity_id": ..., "text": ...}, NOT
-    published by this add-on -- fed by a shared automation
-    (text_monitor_automation_example.yaml at the repo root), forwarding
-    whichever entities you want available. This add-on never watches
-    Home Assistant's own state itself: an earlier version tried that
-    in-process (a "linked entity" text entity, watching Home Assistant's
-    Core API directly via a websocket) and it was pulled back out after
-    never being reliably confirmed working end to end. This is the
-    MQTT-only replacement -- one shared automation instead of a
-    per-add-on Core API connection, using only the MQTT path already
-    confirmed solid. On receipt, routes the text to whichever button(s)
-    currently have that entity_id set via .../follow/set.
+  - akp05/display/set -- the Display switch's command topic: "OFF" runs
+    display_off, "ON" runs display_on.
+  - (removed in 0.10.0: akp05/entity_update and the per-button "Follow
+    Entity" text entities. Showing a live sensor value on a button is
+    now just an automation calling text.set_value on that button's
+    Text entity directly -- see text_monitor_automation_example.yaml at
+    the repo root. On every MQTT connect the add-on clears the retained
+    discovery configs of removed entities so they disappear from Home
+    Assistant on their own; see _stale_retained_topics().)
   - akp05/cmd -- JSON commands for things that don't map to a single
     entity: raw images (there's no MQTT entity type for uploading a
     file from the UI, so this stays automation/script-only), strip
@@ -148,6 +137,13 @@ or how the panel wakes back up afterward. See Bridge.sleep_display()'s
 docstring before relying on this for anything -- worst case, if the panel
 stops responding to anything, a physical unplug/replug may be the only
 way to recover it.
+
+Startup order: MQTT first, then the device. Until the AKP05 is found,
+akp05/status reads "offline" (so its entities show unavailable in Home
+Assistant rather than silently stale) and every command is logged and
+dropped. If the log shows "No hidraw device found" repeating while the
+device is plugged in, power-cycle it (unplug, wait 5s, replug) and
+restart the add-on -- seen once on real hardware and that was the fix.
 
 For syncing a button's icon to an entity's on/off state (green/red)
 rather than a text value, use an automation triggered on that entity's
@@ -224,40 +220,20 @@ def _text_state_topic(button: int) -> str:
 TEXT_SET_TOPICS = {_text_set_topic(button): button for button in range(1, 11)}
 
 
-def _follow_set_topic(button: int) -> str:
-    return f"{DEVICE_ID}/button_{button}/follow/set"
-
-
-def _follow_state_topic(button: int) -> str:
-    return f"{DEVICE_ID}/button_{button}/follow/state"
-
-
-FOLLOW_SET_TOPICS = {_follow_set_topic(button): button for button in range(1, 11)}
-
 STRIP_TEXT_SET_TOPIC = f"{DEVICE_ID}/strip/text/set"
 STRIP_TEXT_STATE_TOPIC = f"{DEVICE_ID}/strip/text/state"
 STRIP_URL_SET_TOPIC = f"{DEVICE_ID}/strip/url/set"
 STRIP_URL_STATE_TOPIC = f"{DEVICE_ID}/strip/url/state"
 
-# Shared by the Display Off / Display On button entities -- each presses
-# a different payload onto this one topic. Stateless (MQTT button
-# entities have no state topic), so nothing is echoed back.
+# The Display switch entity: ON/OFF commands in, current state echoed
+# back (retained) so the toggle reads correctly after a HA restart.
 DISPLAY_SET_TOPIC = f"{DEVICE_ID}/display/set"
+DISPLAY_STATE_TOPIC = f"{DEVICE_ID}/display/state"
 DISPLAY_OFF_PAYLOAD = "OFF"
 DISPLAY_ON_PAYLOAD = "ON"
 
-# Published by a *shared* automation (text_monitor_automation_example.yaml),
-# not by this add-on -- the add-on deliberately doesn't watch entities
-# itself (that was tried as "linked entity"/HAWatcher, pulled back out
-# for being unreliable to confirm working). One automation forwards
-# whichever entities you want available to follow; this add-on just
-# routes {"entity_id": ..., "text": ...} to whichever button(s) currently
-# follow that entity_id.
-ENTITY_UPDATE_TOPIC = f"{DEVICE_ID}/entity_update"
-
 ICONS_PATH = "/data/button_icons.json"
 TEXTS_PATH = "/data/button_texts.json"
-FOLLOWS_PATH = "/data/button_follows.json"
 STRIP_TEXT_PATH = "/data/strip_text.json"
 STRIP_URL_PATH = "/data/strip_url.json"
 
@@ -307,6 +283,25 @@ DISCOVERY_PREFIX = OPTIONS.get("discovery_prefix") or "homeassistant"
 # schema -- every fetch is a full ~1s strip re-upload, so there's no
 # point hammering faster, and Puppet itself takes ~10s on a cold render.
 STRIP_REFRESH_SECONDS = max(5, int(OPTIONS.get("strip_refresh_seconds") or 30))
+
+
+def _stale_retained_topics() -> list[str]:
+    """Retained topics left behind by entities this add-on no longer
+    publishes. An MQTT discovery entity lives on in Home Assistant until
+    its retained config is cleared, so on every MQTT connect these get
+    an empty retained publish -- HA removes the entity, the broker
+    drops the topic, and after that it's a no-op. (0.7.0 removed "Link"
+    without doing this, which is why those could still be lingering on
+    some installs -- covered here too.)"""
+    topics = []
+    for button in range(1, 11):
+        for removed in ("follow", "link"):
+            topics.append(f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/button_{button}_{removed}/config")
+            topics.append(f"{DEVICE_ID}/button_{button}/{removed}/state")
+    # 0.9.1's Display Off / Display On buttons, replaced by the switch.
+    topics.append(f"{DISCOVERY_PREFIX}/button/{DEVICE_ID}/display_off/config")
+    topics.append(f"{DISCOVERY_PREFIX}/button/{DEVICE_ID}/display_on/config")
+    return topics
 
 # Supervisor is *supposed* to inject these once an MQTT broker is
 # available (this add-on declares `mqtt:want` in config.yaml), but that
@@ -408,35 +403,17 @@ def _icon_discovery_payload(button: int) -> dict:
 
 
 def _text_discovery_payload(button: int) -> dict:
-    # A third MQTT `text` entity per button: pushes an already-formatted
+    # A second MQTT `text` entity per button: pushes an already-formatted
     # string (e.g. "21.4°C") straight to the screen via akp05_icons.build_text
-    # (Roboto, auto-shrunk to fit) -- useful directly from an automation/
-    # script for one-off values, and it's what entity_update (below)
-    # renders through for anything a button is following.
+    # (Roboto, auto-shrunk to fit). For a live sensor value, an automation
+    # just calls text.set_value on this entity whenever the sensor
+    # changes -- see text_monitor_automation_example.yaml.
     return {
         "name": f"Button {button} Text",
         "unique_id": f"{DEVICE_ID}_button_{button}_text",
         "command_topic": _text_set_topic(button),
         "state_topic": _text_state_topic(button),
         "icon": "mdi:format-text",
-        "availability_topic": STATUS_TOPIC,
-        "device": DEVICE_INFO,
-    }
-
-
-def _follow_discovery_payload(button: int) -> dict:
-    # Configures *which* entity_id this button follows -- just the
-    # mapping, typed here once. The actual values come from
-    # entity_update, published by a shared automation, not from this
-    # add-on watching Home Assistant itself (see module docstring for
-    # why). Independent of the Icon/Text entities -- whichever one a
-    # button last received a value through is what's currently showing.
-    return {
-        "name": f"Button {button} Follow Entity",
-        "unique_id": f"{DEVICE_ID}_button_{button}_follow",
-        "command_topic": _follow_set_topic(button),
-        "state_topic": _follow_state_topic(button),
-        "icon": "mdi:eye-outline",
         "availability_topic": STATUS_TOPIC,
         "device": DEVICE_INFO,
     }
@@ -477,20 +454,21 @@ def _strip_text_discovery_payload() -> dict:
     }
 
 
-def _display_button_discovery_payload(object_id: str, name: str, payload: str, icon: str) -> dict:
-    # MQTT `button` entities for screen off/on -- the akp05/cmd
-    # display_off/display_on actions were only reachable via a
-    # mqtt.publish JSON payload, which is fine inside an automation but
-    # awkward as a dashboard tile or a voice-assistant target. A button
-    # entity is the natural HA shape for a fire-and-forget action: no
-    # state, just press. Both share one command topic and differ only
-    # in payload_press (see on_message).
+def _display_switch_discovery_payload() -> dict:
+    # MQTT `switch` entity for the screen -- ON/OFF map to the akp05/cmd
+    # display_on/display_off actions, which were only reachable via a
+    # mqtt.publish JSON payload before (fine inside an automation,
+    # awkward as a dashboard tile or a voice-assistant target). A
+    # switch with a state topic is the natural HA shape: one toggle
+    # that also reads back correctly after a HA restart.
     return {
-        "name": name,
-        "unique_id": f"{DEVICE_ID}_{object_id}",
+        "name": "Display",
+        "unique_id": f"{DEVICE_ID}_display",
         "command_topic": DISPLAY_SET_TOPIC,
-        "payload_press": payload,
-        "icon": icon,
+        "state_topic": DISPLAY_STATE_TOPIC,
+        "payload_on": DISPLAY_ON_PAYLOAD,
+        "payload_off": DISPLAY_OFF_PAYLOAD,
+        "icon": "mdi:monitor",
         "availability_topic": STATUS_TOPIC,
         "device": DEVICE_INFO,
     }
@@ -503,17 +481,8 @@ def publish_discovery(client: mqtt.Client):
         retain=True,
     )
     client.publish(
-        f"{DISCOVERY_PREFIX}/button/{DEVICE_ID}/display_off/config",
-        json.dumps(_display_button_discovery_payload(
-            "display_off", "Display Off", DISPLAY_OFF_PAYLOAD, "mdi:monitor-off",
-        )),
-        retain=True,
-    )
-    client.publish(
-        f"{DISCOVERY_PREFIX}/button/{DEVICE_ID}/display_on/config",
-        json.dumps(_display_button_discovery_payload(
-            "display_on", "Display On", DISPLAY_ON_PAYLOAD, "mdi:monitor",
-        )),
+        f"{DISCOVERY_PREFIX}/switch/{DEVICE_ID}/display/config",
+        json.dumps(_display_switch_discovery_payload()),
         retain=True,
     )
     for button in range(1, 11):
@@ -525,11 +494,6 @@ def publish_discovery(client: mqtt.Client):
         client.publish(
             f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/button_{button}_text/config",
             json.dumps(_text_discovery_payload(button)),
-            retain=True,
-        )
-        client.publish(
-            f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/button_{button}_follow/config",
-            json.dumps(_follow_discovery_payload(button)),
             retain=True,
         )
     client.publish(
@@ -582,10 +546,10 @@ class Bridge:
         # any given button in it at a time.
         self.button_icons: dict[int, str] = {int(k): v for k, v in _load_json(ICONS_PATH, {}).items()}
         self.button_texts: dict[int, str] = {int(k): v for k, v in _load_json(TEXTS_PATH, {}).items()}
-        # Which entity_id (if any) each button follows -- just the
-        # mapping; entity_update (fed by a shared automation) is what
-        # actually delivers values for these.
-        self.button_follows: dict[int, str] = {int(k): v for k, v in _load_json(FOLLOWS_PATH, {}).items()}
+        # What the Display switch reports: False only after display_off
+        # (dimmed to 0 AND wiped -- see clear_all), True again on
+        # display_on or a (re)connect's full init.
+        self.display_on_state = True
         # What the strip is showing, if it's showing text (empty string
         # otherwise -- same one-or-the-other rule as a button's
         # icon-vs-text, but against set_strip/set_strip_chunk images).
@@ -601,6 +565,7 @@ class Bridge:
 
     def connect_device(self):
         self.device = connect(self._on_report, full_init=True, on_disconnect=self._handle_disconnect)
+        self.display_on_state = True
         self.publish_state()
         self._restore_button_displays()
 
@@ -662,6 +627,11 @@ class Bridge:
     def publish_state(self):
         self.client.publish(BRIGHTNESS_STATE_TOPIC, str(self.brightness), retain=True)
         self.client.publish(POWER_STATE_TOPIC, "ON" if self.brightness > 0 else "OFF", retain=True)
+        self.client.publish(
+            DISPLAY_STATE_TOPIC,
+            DISPLAY_ON_PAYLOAD if self.display_on_state else DISPLAY_OFF_PAYLOAD,
+            retain=True,
+        )
 
     def set_brightness(self, value: int):
         value = max(0, min(100, int(value)))
@@ -690,6 +660,7 @@ class Bridge:
             crt_command("STP", [], out_len),
         ])
         self.brightness = 0
+        self.display_on_state = False
         self.publish_state()
 
     def display_on(self):
@@ -697,6 +668,7 @@ class Bridge:
         re-renders every button's remembered icon or text value (reuses
         the same restore logic connect_device() already uses after a
         reconnect -- this just triggers it on demand instead)."""
+        self.display_on_state = True
         self.set_brightness(self._last_nonzero_brightness)
         self._restore_button_displays()
 
@@ -723,7 +695,12 @@ class Bridge:
         ])
 
     def set_button_image(self, button: int, jpeg_bytes: bytes):
-        upload_image(self.device, BUTTON_TO_WIRE_KEY[button], jpeg_bytes)
+        # brightness=: upload_image's wake-up sequence includes a LIG
+        # (brightness) command, which used to be hard-coded to 50 -- so
+        # every text/icon refresh silently dragged the panel back to
+        # 50% within seconds of setting anything else. Pass what the
+        # light entity currently says instead.
+        upload_image(self.device, BUTTON_TO_WIRE_KEY[button], jpeg_bytes, brightness=self.brightness)
 
     def clear_button(self, button: int):
         out_len = self._out_len()
@@ -736,7 +713,7 @@ class Bridge:
         ])
 
     def set_strip(self, jpeg_bytes: bytes):
-        upload_image(self.device, STRIP_WIRE_KEY, jpeg_bytes)
+        upload_image(self.device, STRIP_WIRE_KEY, jpeg_bytes, brightness=self.brightness)
 
     def set_strip_chunk(self, chunk: int, patch_img: Image.Image):
         x_offset = (chunk - 11) * STRIP_CHUNK_WIDTH
@@ -836,13 +813,6 @@ class Bridge:
         if self.button_icons.pop(button, None) is not None:
             _save_json(ICONS_PATH, self.button_icons)
 
-    def set_follow(self, button: int, entity_id: str):
-        if entity_id:
-            self.button_follows[button] = entity_id
-        else:
-            self.button_follows.pop(button, None)
-        _save_json(FOLLOWS_PATH, self.button_follows)
-
     @staticmethod
     def _classify(key: int, state: int):
         """Returns (object_id, event_type) matching _event_entities()."""
@@ -938,25 +908,31 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     client.subscribe(POWER_SET_TOPIC)
     client.subscribe(BRIGHTNESS_SET_TOPIC)
     client.subscribe(CMD_TOPIC)
-    client.subscribe(ENTITY_UPDATE_TOPIC)
     for topic in ICON_SET_TOPICS:
         client.subscribe(topic)
     for topic in TEXT_SET_TOPICS:
         client.subscribe(topic)
-    for topic in FOLLOW_SET_TOPICS:
-        client.subscribe(topic)
     client.subscribe(STRIP_TEXT_SET_TOPIC)
     client.subscribe(STRIP_URL_SET_TOPIC)
     client.subscribe(DISPLAY_SET_TOPIC)
+    for topic in _stale_retained_topics():
+        client.publish(topic, "", retain=True)
     publish_discovery(client)
-    client.publish(STATUS_TOPIC, "online", retain=True)
     bridge = bridge_holder.get("bridge")
-    if bridge is not None:
+    # MQTT comes up before the device is found (see main) -- only claim
+    # "online" once the AKP05 is actually open, so its entities show
+    # unavailable rather than silently stale while it's missing.
+    device_ready = bridge is not None and bridge.device is not None
+    client.publish(STATUS_TOPIC, "online" if device_ready else "offline", retain=True)
+    if device_ready:
         bridge.publish_state()
 
 
 def on_message(client, userdata, msg):
     bridge = bridge_holder["bridge"]
+    if bridge.device is None:
+        print(f"Device not connected -- ignoring message on {msg.topic}")
+        return
     try:
         if msg.topic == POWER_SET_TOPIC:
             bridge.set_power(msg.payload.decode().strip().upper() == "ON")
@@ -965,9 +941,9 @@ def on_message(client, userdata, msg):
         elif msg.topic == CMD_TOPIC:
             _handle_cmd(bridge, json.loads(msg.payload.decode()))
         elif msg.topic == DISPLAY_SET_TOPIC:
-            # The Display Off / Display On button entities -- same code
-            # paths as akp05/cmd's display_off/display_on, just reached
-            # by a press instead of a JSON payload.
+            # The Display switch -- same code paths as akp05/cmd's
+            # display_off/display_on, just reached by a toggle instead
+            # of a JSON payload. State is echoed via publish_state().
             payload = msg.payload.decode().strip().upper()
             if payload == DISPLAY_OFF_PAYLOAD:
                 bridge.clear_all()
@@ -995,11 +971,6 @@ def on_message(client, userdata, msg):
             else:
                 bridge.clear_button(button)
             client.publish(_text_state_topic(button), text, retain=True)
-        elif msg.topic in FOLLOW_SET_TOPICS:
-            button = FOLLOW_SET_TOPICS[msg.topic]
-            entity_id = msg.payload.decode().strip()
-            bridge.set_follow(button, entity_id)
-            client.publish(_follow_state_topic(button), entity_id, retain=True)
         elif msg.topic == STRIP_TEXT_SET_TOPIC:
             text = msg.payload.decode().strip()
             bridge.set_strip_text(text)
@@ -1008,13 +979,6 @@ def on_message(client, userdata, msg):
             url = msg.payload.decode().strip()
             bridge.set_strip_url(url)
             client.publish(STRIP_URL_STATE_TOPIC, url, retain=True)
-        elif msg.topic == ENTITY_UPDATE_TOPIC:
-            update = json.loads(msg.payload.decode())
-            entity_id, text = update.get("entity_id"), update.get("text", "")
-            for button, followed in list(bridge.button_follows.items()):
-                if followed == entity_id:
-                    bridge.set_text(button, text)
-                    client.publish(_text_state_topic(button), text, retain=True)
     except Exception as exc:  # noqa: BLE001 - a bad command shouldn't kill the bridge
         print(f"Error handling message on {msg.topic}: {exc}")
 
@@ -1030,13 +994,27 @@ def _connect_device_with_retry(bridge: Bridge):
     Supervisor on every transient miss, e.g. the USB device not having
     finished re-enumerating yet right after a restart. Retry in-process
     instead of crash-looping the whole container over it."""
+    attempts = 0
     while True:
         try:
             bridge.connect_device()
+            bridge.client.publish(STATUS_TOPIC, "online", retain=True)
             return
         except SystemExit:
             print(f"Device not found yet, retrying in {DEVICE_RETRY_DELAY}s...")
-            time.sleep(DEVICE_RETRY_DELAY)
+        except Exception as exc:  # noqa: BLE001 - e.g. a permission error on the hidraw node
+            print(f"Opening the device failed ({exc!r}), retrying in {DEVICE_RETRY_DELAY}s...")
+        attempts += 1
+        if attempts == 12:
+            # Seen on real hardware: plugged in, visible on the host,
+            # yet never found here until the device itself was
+            # power-cycled. Say so once rather than scrolling forever.
+            print(
+                "Still no device after a minute. If the AKP05 is plugged into this "
+                "host, unplug it, wait 5 seconds, plug it back in, then restart "
+                "this add-on -- that has fixed exactly this before."
+            )
+        time.sleep(DEVICE_RETRY_DELAY)
 
 
 def main():
@@ -1049,7 +1027,13 @@ def main():
 
     bridge = Bridge(client)
     bridge_holder["bridge"] = bridge
-    _connect_device_with_retry(bridge)
+    # Device search runs off the main thread so MQTT comes up first:
+    # while the AKP05 is missing, akp05/status reads "offline" and its
+    # entities show unavailable in HA. Previously this blocked here
+    # before ever touching MQTT, so a missing device left whatever
+    # retained "online" the last run had published sitting there, and
+    # HA looked healthy while nothing actually worked.
+    threading.Thread(target=_connect_device_with_retry, args=(bridge,), daemon=True).start()
 
     # connect_async + loop_forever(retry_first_connection=True) instead
     # of a plain connect(): the mqtt:need service dependency should mean
