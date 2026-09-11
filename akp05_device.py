@@ -349,6 +349,13 @@ def open_device(raw_data_handler=None, on_disconnect=None):
     return device
 
 
+def _write_all(device, buffers):
+    """Caller must hold device._write_lock."""
+    for buf in buffers:
+        device.send_output_report(buf)
+        time.sleep(0.05)
+
+
 def send_commands(device, buffers):
     """Holds the device's write lock for the whole batch, not just each
     individual write -- a multi-packet sequence like an image upload's
@@ -356,9 +363,7 @@ def send_commands(device, buffers):
     thread's own commands interleaved between chunks (each write on its
     own would still leave that gap), it would corrupt the upload."""
     with device._write_lock:
-        for buf in buffers:
-            device.send_output_report(buf)
-            time.sleep(0.05)
+        _write_all(device, buffers)
 
 
 def encode_image(image_or_path, size, rotate180: bool = True) -> bytes:
@@ -413,9 +418,21 @@ def upload_image(device, wire_key: int, jpeg_bytes: bytes, brightness: int = 50)
             crt_command("CLE", [0x00, 0x00, 0x00, wire_key], out_len),
             crt_command("STP", [], out_len),
         ]
-    send_commands(device, prefix)
-    send_commands(device, build_bat_commands(wire_key, jpeg_bytes, out_len))
-    send_commands(device, [crt_command("STP", [], out_len)])
+    # One lock hold for the ENTIRE upload: wake, BAT header + data, STP.
+    # These used to be three separate send_commands() calls, so the
+    # keepalive thread (every 10s) -- or the add-on's strip poller --
+    # could slip its own packets in between the image data and the
+    # commit. On real hardware that left the device in a state where it
+    # accepted every later upload silently and displayed none of them,
+    # until a physical power-cycle. (The old always-clear-first prefix
+    # apparently reset that state on the next upload, which is why the
+    # bug only surfaced once that clear was dropped for the no-blink
+    # sequence.) The reference notes are explicit that uploads must be
+    # serialised and allowed to settle before anything else is sent.
+    with device._write_lock:
+        _write_all(device, prefix)
+        _write_all(device, build_bat_commands(wire_key, jpeg_bytes, out_len))
+        _write_all(device, [crt_command("STP", [], out_len)])
 
 
 def _keepalive_loop(device, out_len: int, stop_event: threading.Event, on_disconnect):

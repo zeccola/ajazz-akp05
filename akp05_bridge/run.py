@@ -714,7 +714,9 @@ class Bridge:
         # every text/icon refresh silently dragged the panel back to
         # 50% within seconds of setting anything else. Pass what the
         # light entity currently says instead.
+        started = time.monotonic()
         upload_image(self.device, BUTTON_TO_WIRE_KEY[button], jpeg_bytes, brightness=self.brightness)
+        print(f"Uploaded button {button} image ({len(jpeg_bytes)} bytes) in {(time.monotonic() - started) * 1000:.0f}ms")
 
     def clear_button(self, button: int):
         out_len = self._out_len()
@@ -725,7 +727,9 @@ class Bridge:
         ])
 
     def set_strip(self, jpeg_bytes: bytes):
+        started = time.monotonic()
         upload_image(self.device, STRIP_WIRE_KEY, jpeg_bytes, brightness=self.brightness)
+        print(f"Uploaded strip image ({len(jpeg_bytes)} bytes) in {(time.monotonic() - started) * 1000:.0f}ms")
 
     def set_strip_chunk(self, chunk: int, patch_img: Image.Image):
         x_offset = (chunk - 11) * STRIP_CHUNK_WIDTH
@@ -860,6 +864,7 @@ def _decode_image(image_b64: str) -> Image.Image:
 
 def _handle_cmd(bridge: Bridge, payload: dict):
     action = payload.get("action")
+    print(f"cmd: {action} {({k: v for k, v in payload.items() if k not in ('action', 'image_b64')})}")
     if action == "set_brightness":
         bridge.set_brightness(payload["value"])
     elif action in ("clear_all", "display_off"):
@@ -966,6 +971,7 @@ def on_message(client, userdata, msg):
         elif msg.topic in ICON_SET_TOPICS:
             button = ICON_SET_TOPICS[msg.topic]
             icon = msg.payload.decode().strip()
+            print(f"Button {button} icon <- {icon!r}")
             if icon:
                 bridge.set_icon(button, icon, None)
             else:
@@ -978,6 +984,7 @@ def on_message(client, userdata, msg):
         elif msg.topic in TEXT_SET_TOPICS:
             button = TEXT_SET_TOPICS[msg.topic]
             text = msg.payload.decode().strip()
+            print(f"Button {button} text <- {text!r}")
             if text:
                 bridge.set_text(button, text)
             else:
@@ -985,10 +992,12 @@ def on_message(client, userdata, msg):
             client.publish(_text_state_topic(button), text, retain=True)
         elif msg.topic == STRIP_TEXT_SET_TOPIC:
             text = msg.payload.decode().strip()
+            print(f"Strip text <- {text!r}")
             bridge.set_strip_text(text)
             client.publish(STRIP_TEXT_STATE_TOPIC, text, retain=True)
         elif msg.topic == STRIP_URL_SET_TOPIC:
             url = msg.payload.decode().strip()
+            print(f"Strip URL <- {url!r}")
             bridge.set_strip_url(url)
             client.publish(STRIP_URL_STATE_TOPIC, url, retain=True)
     except Exception as exc:  # noqa: BLE001 - a bad command shouldn't kill the bridge

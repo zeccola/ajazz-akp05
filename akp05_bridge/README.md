@@ -142,6 +142,21 @@ automatically once an MQTT broker add-on is running, no setup needed.
      sequence (symptom would be updates not showing up), turn on
      `legacy_wake_sequence` in the add-on's Configuration tab and
      restart — no rebuild needed. Please report it if so.
+   - **After a while, icon/text changes stop showing on the device
+     (buttons still work), and unplugging/replugging the AKP05 fixes
+     it** — a real bug, fixed in 0.10.4: an image upload was sent as
+     three separate write batches, so the 10-second keepalive (or the
+     strip poller) could inject its own packets between the image data
+     and the commit. The device then silently accepted every later
+     upload and displayed none of them until power-cycled. Uploads are
+     now one uninterruptible batch. The add-on also logs every upload
+     with its size and duration now, so if anything like this recurs
+     the Log tab shows exactly what was sent last.
+   - **Getting a useful log** — the add-on's Log tab only shows the
+     last ~100 lines, which a few restarts fill with container
+     start/stop noise. Use **Settings → System → Logs**, pick "AKP05
+     Bridge" from the dropdown, and **Load full logs** (or the download
+     icon) to get the whole thing.
    - **The Log tab is empty or minutes behind** — fixed in 0.10.0
      (Python was buffering its output inside the container).
 3. In Home Assistant: **Settings → Devices & Services → MQTT** — an
