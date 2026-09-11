@@ -180,6 +180,31 @@ def minimal_init_sequence(total_len: int) -> list[list[int]]:
 
 KEEPALIVE_INTERVAL = 10  # seconds -- matches opendeck-akp05's keepalive_task
 
+# Escape hatch: True restores the pre-0.10.3 wake prefix on every
+# keepalive tick and image upload -- DIS, bare LIG (= brightness 0),
+# LIG <pct>, and for uploads CLE <key> + STP before the BAT. That prefix
+# made the whole panel blink dark for a moment every 10 seconds and on
+# every text/icon update (the bare LIG is a real "backlight off"), and
+# the CLE flashed the target button black before its new image. The
+# default now skips the bare LIG and the pre-clear -- the reference
+# implementations (mirajazz/opendeck-akp05) do neither before a BAT.
+# DIS itself is kept: 0.10.1 showed the device stops taking updates
+# without the wake pair in the keepalive. The add-on exposes this as
+# its `legacy_wake_sequence` option in case a unit turns out to need
+# the old form -- flip it and restart, no rebuild.
+LEGACY_WAKE = False
+
+
+def wake_sequence(total_len: int, brightness: int) -> list[list[int]]:
+    """DIS + LIG <brightness>: wakes the panel and (re)asserts brightness
+    in one go, with no pass through brightness 0. See LEGACY_WAKE."""
+    pct = max(0, min(100, int(brightness)))
+    commands = [crt_command("DIS", [], total_len)]
+    if LEGACY_WAKE:
+        commands.append(crt_command("LIG", [0x00, 0x00], total_len))
+    commands.append(crt_command("LIG", [0x00, 0x00, pct], total_len))
+    return commands
+
 
 def keep_alive_command(total_len: int) -> list[int]:
     return crt_command("CONNECT", [], total_len)
@@ -370,9 +395,10 @@ def build_bat_commands(wire_key: int, jpeg_bytes: bytes, total_len: int):
 
 
 def upload_image(device, wire_key: int, jpeg_bytes: bytes, brightness: int = 50):
-    """Wake (without wiping other keys), clear just this wire-key, upload
-    the image, commit. Uses the proven wake-up sequence, scoped so it
-    doesn't disturb other buttons/the strip.
+    """Wake (without wiping other keys), upload the image straight over
+    whatever this wire-key currently shows, commit. No pass through
+    brightness 0 and no pre-clear of the key, so the only visible change
+    is old image -> new image (see LEGACY_WAKE for the old form).
 
     brightness: the wake-up sequence includes a LIG (brightness) command
     -- it sets the panel's brightness as a side effect of every upload.
@@ -381,16 +407,13 @@ def upload_image(device, wire_key: int, jpeg_bytes: bytes, brightness: int = 50)
     to this default (that was a real, reported bug: "keeps going back
     to 50%"). One-shot CLI scripts can leave it."""
     out_len = device.hid_caps.output_report_byte_length
-    send_commands(
-        device,
-        [
-            crt_command("DIS", [], out_len),
-            crt_command("LIG", [0x00, 0x00], out_len),
-            crt_command("LIG", [0x00, 0x00, max(0, min(100, int(brightness)))], out_len),
+    prefix = wake_sequence(out_len, brightness)
+    if LEGACY_WAKE:
+        prefix += [
             crt_command("CLE", [0x00, 0x00, 0x00, wire_key], out_len),
             crt_command("STP", [], out_len),
-        ],
-    )
+        ]
+    send_commands(device, prefix)
     send_commands(device, build_bat_commands(wire_key, jpeg_bytes, out_len))
     send_commands(device, [crt_command("STP", [], out_len)])
 
@@ -398,16 +421,17 @@ def upload_image(device, wire_key: int, jpeg_bytes: bytes, brightness: int = 50)
 def _keepalive_loop(device, out_len: int, stop_event: threading.Event, on_disconnect):
     while not stop_event.wait(KEEPALIVE_INTERVAL):
         try:
-            # DIS + bare LIG are required here (see module docstring:
+            # The wake pair is required here (see module docstring:
             # CONNECT alone kills image updates after the first tick).
-            commands = minimal_init_sequence(out_len)
-            # The bare LIG carries brightness 0 -- a long-running caller
-            # that tracks brightness (the add-on) re-asserts it right
-            # after, same prefix upload_image uses.
+            # A long-running caller that tracks brightness (the add-on)
+            # gets DIS + LIG <its value> -- no pass through 0, so no
+            # blink -- via wake_sequence(); one-shot CLI callers keep
+            # the plain minimal init.
             provider = getattr(device, "brightness_provider", None)
             if provider is not None:
-                pct = max(0, min(100, int(provider())))
-                commands.append(crt_command("LIG", [0x00, 0x00, pct], out_len))
+                commands = wake_sequence(out_len, provider())
+            else:
+                commands = minimal_init_sequence(out_len)
             commands.append(keep_alive_command(out_len))
             send_commands(device, commands)
         except Exception:

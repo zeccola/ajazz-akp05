@@ -1,5 +1,5 @@
 name: "AKP05 Bridge"
-version: "0.10.2"
+version: "0.10.3"
 slug: "akp05_bridge"
 description: >-
   USB bridge for the Ajazz AKP05 macro pad. Owns the raw HID connection
@@ -24,9 +24,11 @@ services:
 options:
   discovery_prefix: "homeassistant"
   strip_refresh_seconds: 30
+  legacy_wake_sequence: false
 schema:
   discovery_prefix: "str"
   strip_refresh_seconds: "int(5,)?"
+  legacy_wake_sequence: "bool?"
   mqtt_host: "str?"
   mqtt_port: "port?"
   mqtt_username: "str?"

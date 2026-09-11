@@ -162,6 +162,7 @@ import paho.mqtt.client as mqtt
 import requests
 from PIL import Image
 
+import akp05_device
 from akp05_device import (
     BUTTON_IMAGE_SIZE,
     BUTTON_TO_WIRE_KEY,
@@ -283,6 +284,10 @@ DISCOVERY_PREFIX = OPTIONS.get("discovery_prefix") or "homeassistant"
 # schema -- every fetch is a full ~1s strip re-upload, so there's no
 # point hammering faster, and Puppet itself takes ~10s on a cold render.
 STRIP_REFRESH_SECONDS = max(5, int(OPTIONS.get("strip_refresh_seconds") or 30))
+# Escape hatch for the no-blink wake sequence (see akp05_device.LEGACY_WAKE).
+akp05_device.LEGACY_WAKE = bool(OPTIONS.get("legacy_wake_sequence", False))
+if akp05_device.LEGACY_WAKE:
+    print("legacy_wake_sequence is on: using the pre-0.10.3 (blinking) wake/upload sequence")
 
 
 def _stale_retained_topics() -> list[str]:
@@ -714,12 +719,7 @@ class Bridge:
     def clear_button(self, button: int):
         out_len = self._out_len()
         wire_key = BUTTON_TO_WIRE_KEY[button]
-        send_commands(self.device, [
-            crt_command("DIS", [], out_len),
-            crt_command("LIG", [0x00, 0x00], out_len),
-            # Re-assert brightness right after the wake pair, same as
-            # upload_image does -- the bare LIG above carries 0.
-            crt_command("LIG", [0x00, 0x00, self.brightness], out_len),
+        send_commands(self.device, akp05_device.wake_sequence(out_len, self.brightness) + [
             crt_command("CLE", [0x00, 0x00, 0x00, wire_key], out_len),
             crt_command("STP", [], out_len),
         ])

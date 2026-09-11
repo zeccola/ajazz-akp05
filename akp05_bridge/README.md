@@ -132,6 +132,16 @@ automatically once an MQTT broker add-on is running, no setup needed.
      after the first tick, so 0.10.2 keeps the pair and instead
      re-sends whatever the Brightness entity currently says right after
      it, on every tick. The panel now also defaults to 100% on start.
+   - **The whole panel blinks dark every few seconds, and a text/icon
+     update goes black for a moment before the new one appears** —
+     fixed in 0.10.3. The keepalive and every image upload sent a bare
+     `LIG` (which is "backlight 0") before the real brightness, and
+     uploads also cleared the target button to black before drawing
+     it. Neither is done now; the reference implementations never did
+     either before an upload. If your unit turns out to need the old
+     sequence (symptom would be updates not showing up), turn on
+     `legacy_wake_sequence` in the add-on's Configuration tab and
+     restart — no rebuild needed. Please report it if so.
    - **The Log tab is empty or minutes behind** — fixed in 0.10.0
      (Python was buffering its output inside the container).
 3. In Home Assistant: **Settings → Devices & Services → MQTT** — an
