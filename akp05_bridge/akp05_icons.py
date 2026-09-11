@@ -152,20 +152,26 @@ def build_icon(name: str, is_on: bool | None) -> Image.Image:
     return img
 
 
-def build_text(text: str, color=TEXT_COLOR) -> Image.Image:
+def build_text(text: str, size=BUTTON_IMAGE_SIZE, color=TEXT_COLOR) -> Image.Image:
     """Renders arbitrary text (a sensor value, "21.4°C", a media title,
-    whatever) centered on a button in Roboto, auto-shrinking to fit --
-    unlike build_icon this isn't tied to on/off coloring, it's just a
-    plain readable value display. Same dark background as build_icon so
-    text-monitor and icon buttons look consistent next to each other."""
-    size = BUTTON_IMAGE_SIZE
+    whatever) centered in Roboto, auto-shrinking to fit `size` -- unlike
+    build_icon this isn't tied to on/off coloring, it's just a plain
+    readable value display. Same dark background as build_icon so
+    text-monitor buttons and icon buttons look consistent next to each
+    other. Defaults to a button's size; pass STRIP_IMAGE_SIZE for the
+    touch strip (akp05_write_strip_text.py) -- both share the same
+    112px height, so starting the font size from a fraction of the
+    height (rather than a fixed guess) scales sensibly for either
+    without needing separate logic: a short string on the much wider
+    strip actually uses the extra room instead of rendering at a small
+    fixed size just because that's what fit a 112px-wide button."""
     img = Image.new("RGB", size, (8, 8, 8))
     draw = ImageDraw.Draw(img)
 
     margin = 12
     max_width, max_height = size[0] - 2 * margin, size[1] - 2 * margin
 
-    font_size = 56
+    font_size = max(12, int(size[1] * 0.7))
     font = _roboto_font(font_size)
     bbox = draw.textbbox((0, 0), text, font=font)
     w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]

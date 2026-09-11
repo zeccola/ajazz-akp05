@@ -56,6 +56,25 @@ What gets published:
     should display. Doesn't make this add-on watch anything itself --
     see the akp05/entity_update note below for why, and how values
     actually get here.
+  - homeassistant/text/akp05/strip_text/config (retained) -- one more
+    `text` entity, same idea as button_<n>_text but rendering to the
+    full 800x112 touch strip (build_text with the strip's size --
+    Roboto, auto-shrunk to fit the width). The direct answer to "let me
+    put something on the strip from Home Assistant" without needing the
+    base64-image akp05/cmd path. Like a button, the strip shows the
+    text OR whatever image was last pushed via set_strip/
+    set_strip_chunk, never both -- setting either forgets the other
+    (the strip is a single full-write surface, so the add-on remembers
+    at most one thing to restore after a reconnect/display_on).
+  - homeassistant/text/akp05/strip_url/config (retained) -- the third
+    strip mode: set an image URL and the add-on re-fetches and paints
+    it every strip_refresh_seconds (add-on option, default 30). Built
+    for balloob's Puppet add-on -- design a dashboard view in the
+    normal Lovelace editor, then point this at
+    http://homeassistant.local:10000/<dashboard>/0?viewport=800x112 for
+    a live card on the strip -- but any URL serving an image works.
+    Text, URL, and raw images are mutually exclusive; setting any one
+    forgets the others.
   - akp05/status -- retained "online"/"offline" (MQTT last-will), used
     as every entity's availability topic.
   - akp05/event/<id> -- NOT retained, JSON {"event_type": "pressed"}
@@ -63,7 +82,8 @@ What gets published:
   - akp05/event -- NOT retained, plain "<event_type>:<object_id>", feeds
     only the device_automation triggers (which match a raw payload
     string, not a JSON field, hence the separate topic/format).
-  - akp05/button_<n>/icon/state, .../text/state, .../follow/state --
+  - akp05/button_<n>/icon/state, .../text/state, .../follow/state,
+    akp05/strip/text/state --
     retained, echo back whatever was actually set. icon/state only
     updates on a successful render (an unrecognized MDI name is
     silently rejected rather than echoed, the only feedback an MQTT
@@ -75,6 +95,10 @@ What it subscribes to:
     command topics ("ON"/"OFF" and "0".."100" respectively).
   - akp05/button_<n>/icon/set, .../text/set, .../follow/set -- the three
     text entities' command topics above; empty string clears/unlinks.
+  - akp05/strip/text/set -- the Strip Text entity's command topic;
+    empty string clears the strip to black.
+  - akp05/strip/url/set -- the Strip URL entity's command topic; empty
+    string leaves URL mode (stops the poller repainting).
   - akp05/entity_update -- JSON {"entity_id": ..., "text": ...}, NOT
     published by this add-on -- fed by a shared automation
     (text_monitor_automation_example.yaml at the repo root), forwarding
@@ -90,7 +114,7 @@ What it subscribes to:
   - akp05/cmd -- JSON commands for things that don't map to a single
     entity: raw images (there's no MQTT entity type for uploading a
     file from the UI, so this stays automation/script-only), strip
-    images, clearing, display_off/display_on, set_text,
+    images, clearing, display_off/display_on, set_text, set_strip_text,
     experimental_sleep. See the add-on's README for the payload shapes;
     call these from automations with the mqtt.publish service.
 
@@ -130,6 +154,7 @@ import time
 from io import BytesIO
 
 import paho.mqtt.client as mqtt
+import requests
 from PIL import Image
 
 from akp05_device import (
@@ -200,6 +225,11 @@ def _follow_state_topic(button: int) -> str:
 
 FOLLOW_SET_TOPICS = {_follow_set_topic(button): button for button in range(1, 11)}
 
+STRIP_TEXT_SET_TOPIC = f"{DEVICE_ID}/strip/text/set"
+STRIP_TEXT_STATE_TOPIC = f"{DEVICE_ID}/strip/text/state"
+STRIP_URL_SET_TOPIC = f"{DEVICE_ID}/strip/url/set"
+STRIP_URL_STATE_TOPIC = f"{DEVICE_ID}/strip/url/state"
+
 # Published by a *shared* automation (text_monitor_automation_example.yaml),
 # not by this add-on -- the add-on deliberately doesn't watch entities
 # itself (that was tried as "linked entity"/HAWatcher, pulled back out
@@ -212,6 +242,8 @@ ENTITY_UPDATE_TOPIC = f"{DEVICE_ID}/entity_update"
 ICONS_PATH = "/data/button_icons.json"
 TEXTS_PATH = "/data/button_texts.json"
 FOLLOWS_PATH = "/data/button_follows.json"
+STRIP_TEXT_PATH = "/data/strip_text.json"
+STRIP_URL_PATH = "/data/strip_url.json"
 
 
 def _load_json(path: str, default):
@@ -255,6 +287,10 @@ def load_options() -> dict:
 
 OPTIONS = load_options()
 DISCOVERY_PREFIX = OPTIONS.get("discovery_prefix") or "homeassistant"
+# How often the Strip URL poller re-fetches (seconds). Floor of 5 in the
+# schema -- every fetch is a full ~1s strip re-upload, so there's no
+# point hammering faster, and Puppet itself takes ~10s on a cold render.
+STRIP_REFRESH_SECONDS = max(5, int(OPTIONS.get("strip_refresh_seconds") or 30))
 
 # Supervisor is *supposed* to inject these once an MQTT broker is
 # available (this add-on declares `mqtt:want` in config.yaml), but that
@@ -390,6 +426,41 @@ def _follow_discovery_payload(button: int) -> dict:
     }
 
 
+def _strip_url_discovery_payload() -> dict:
+    # The "pretty card on the strip" answer: point this at anything that
+    # serves an image over HTTP and the add-on re-fetches it every
+    # strip_refresh_seconds and paints it (resized to 800x112). Built
+    # with balloob's Puppet add-on in mind -- design a dashboard view in
+    # the normal Lovelace editor, then set this to e.g.
+    # http://homeassistant.local:10000/<dashboard>/0?viewport=800x112
+    # -- but any image URL works (cameras, graphs, whatever).
+    return {
+        "name": "Strip URL",
+        "unique_id": f"{DEVICE_ID}_strip_url",
+        "command_topic": STRIP_URL_SET_TOPIC,
+        "state_topic": STRIP_URL_STATE_TOPIC,
+        "icon": "mdi:link-variant",
+        "availability_topic": STATUS_TOPIC,
+        "device": DEVICE_INFO,
+    }
+
+
+def _strip_text_discovery_payload() -> dict:
+    # Same idea as _text_discovery_payload but for the whole 800x112
+    # touch strip -- the one directly-typeable control for it (raw
+    # images stay on the akp05/cmd base64 path; MQTT has no entity type
+    # for uploading a file from the UI).
+    return {
+        "name": "Strip Text",
+        "unique_id": f"{DEVICE_ID}_strip_text",
+        "command_topic": STRIP_TEXT_SET_TOPIC,
+        "state_topic": STRIP_TEXT_STATE_TOPIC,
+        "icon": "mdi:format-text",
+        "availability_topic": STATUS_TOPIC,
+        "device": DEVICE_INFO,
+    }
+
+
 def publish_discovery(client: mqtt.Client):
     client.publish(
         f"{DISCOVERY_PREFIX}/light/{DEVICE_ID}/brightness/config",
@@ -412,6 +483,16 @@ def publish_discovery(client: mqtt.Client):
             json.dumps(_follow_discovery_payload(button)),
             retain=True,
         )
+    client.publish(
+        f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/strip_text/config",
+        json.dumps(_strip_text_discovery_payload()),
+        retain=True,
+    )
+    client.publish(
+        f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/strip_url/config",
+        json.dumps(_strip_url_discovery_payload()),
+        retain=True,
+    )
     for object_id, event_types, device_class in _event_entities():
         client.publish(
             f"{DISCOVERY_PREFIX}/event/{DEVICE_ID}/{object_id}/config",
@@ -456,6 +537,18 @@ class Bridge:
         # mapping; entity_update (fed by a shared automation) is what
         # actually delivers values for these.
         self.button_follows: dict[int, str] = {int(k): v for k, v in _load_json(FOLLOWS_PATH, {}).items()}
+        # What the strip is showing, if it's showing text (empty string
+        # otherwise -- same one-or-the-other rule as a button's
+        # icon-vs-text, but against set_strip/set_strip_chunk images).
+        self.strip_text: str = _load_json(STRIP_TEXT_PATH, "")
+        # ...or a periodically-refetched image URL (the "dashboard card
+        # on the strip" mode, via e.g. the Puppet add-on). Text, URL,
+        # and raw set_strip images are all mutually exclusive: setting
+        # any one forgets the others. The poller thread runs for the
+        # process's whole life and just idles while strip_url is empty.
+        self.strip_url: str = _load_json(STRIP_URL_PATH, "")
+        self._strip_url_wake = threading.Event()
+        threading.Thread(target=self._strip_url_loop, daemon=True).start()
 
     def connect_device(self):
         self.device = connect(self._on_report, full_init=True, on_disconnect=self._handle_disconnect)
@@ -505,6 +598,14 @@ class Bridge:
                 self.set_text(button, text)
             except Exception as exc:  # noqa: BLE001 - one bad value shouldn't block the rest
                 print(f"Couldn't restore text for button {button} ({text!r}): {exc}")
+        if self.strip_text:
+            try:
+                self.set_strip_text(self.strip_text)
+            except Exception as exc:  # noqa: BLE001
+                print(f"Couldn't restore strip text ({self.strip_text!r}): {exc}")
+        if self.strip_url:
+            # Just nudge the poller -- it does the fetch/paint itself.
+            self._strip_url_wake.set()
 
     def _out_len(self) -> int:
         return self.device.hid_caps.output_report_byte_length
@@ -595,6 +696,80 @@ class Bridge:
         save_strip_canvas(canvas)
         self.set_strip(encode_image(canvas, STRIP_IMAGE_SIZE))
 
+    def set_strip_text(self, text: str):
+        """Renders text across the whole strip (build_text at
+        STRIP_IMAGE_SIZE -- Roboto, auto-shrunk to fit the width) and
+        remembers it for restore-after-reconnect, same as a button's
+        text. Empty text clears the strip to black and forgets."""
+        if text:
+            img = build_text(text, size=STRIP_IMAGE_SIZE)
+        else:
+            img = Image.new("RGB", STRIP_IMAGE_SIZE, (0, 0, 0))
+        # Either way this takes the strip over -- even an empty set means
+        # "blank it", which URL mode would repaint over seconds later.
+        self.forget_strip_url()
+        save_strip_canvas(img)
+        self.set_strip(encode_image(img, STRIP_IMAGE_SIZE))
+        self.strip_text = text
+        _save_json(STRIP_TEXT_PATH, text)
+
+    def forget_strip_text(self):
+        """Called when a raw image lands on the strip (set_strip/
+        set_strip_chunk cmd actions) -- mirrors how a button's set_icon
+        forgets its text: whatever was written last is the one thing
+        remembered/restored, never both."""
+        if self.strip_text:
+            self.strip_text = ""
+            _save_json(STRIP_TEXT_PATH, "")
+            self.client.publish(STRIP_TEXT_STATE_TOPIC, "", retain=True)
+
+    def forget_strip_url(self):
+        """Same idea for URL mode -- stops the poller repainting over
+        whatever just replaced it."""
+        if self.strip_url:
+            self.strip_url = ""
+            _save_json(STRIP_URL_PATH, "")
+            self.client.publish(STRIP_URL_STATE_TOPIC, "", retain=True)
+
+    def set_strip_url(self, url: str):
+        """Enters (or leaves, on empty) URL mode: the poller re-fetches
+        the image every STRIP_REFRESH_SECONDS and paints it. The first
+        fetch happens immediately (the poller is woken rather than
+        waiting out its current sleep). An unreachable URL doesn't
+        raise here -- the poller logs each failed fetch and keeps
+        retrying on the same schedule, so a Puppet add-on restart heals
+        on its own."""
+        self.strip_url = url
+        _save_json(STRIP_URL_PATH, url)
+        if url:
+            self.forget_strip_text()
+            self._strip_url_wake.set()
+
+    def _strip_url_loop(self):
+        while True:
+            woken = self._strip_url_wake.wait(timeout=STRIP_REFRESH_SECONDS)
+            self._strip_url_wake.clear()
+            url = self.strip_url
+            if not url or self.device is None:
+                continue
+            try:
+                resp = requests.get(url, timeout=30)
+                resp.raise_for_status()
+                img = Image.open(BytesIO(resp.content)).convert("RGB").resize(STRIP_IMAGE_SIZE, Image.LANCZOS)
+            except Exception as exc:  # noqa: BLE001 - a dead URL shouldn't kill the poller
+                print(f"Strip URL fetch failed ({url}): {exc}")
+                continue
+            # Re-check: text/raw-image may have taken over during the
+            # fetch (which can take seconds against a cold Puppet) --
+            # don't paint a stale card over what the user just set.
+            if self.strip_url != url:
+                continue
+            try:
+                save_strip_canvas(img)
+                self.set_strip(encode_image(img, STRIP_IMAGE_SIZE))
+            except Exception as exc:  # noqa: BLE001 - e.g. device mid-reconnect
+                print(f"Strip URL paint failed: {exc}")
+
     def set_icon(self, button: int, icon: str, state: str | None):
         is_on = {"on": True, "off": False}.get(state)
         img = build_icon(icon, is_on)  # raises KeyError for an unrecognized name -- caller decides how to handle
@@ -678,6 +853,8 @@ def _handle_cmd(bridge: Bridge, payload: dict):
             img = _decode_image(payload["image_b64"]).resize(STRIP_IMAGE_SIZE, Image.LANCZOS)
         save_strip_canvas(img)
         bridge.set_strip(encode_image(img, STRIP_IMAGE_SIZE))
+        bridge.forget_strip_text()
+        bridge.forget_strip_url()
     elif action == "set_strip_chunk":
         chunk = int(payload["chunk"])
         size = (STRIP_CHUNK_WIDTH, STRIP_IMAGE_SIZE[1])
@@ -686,6 +863,14 @@ def _handle_cmd(bridge: Bridge, payload: dict):
         else:
             patch = _decode_image(payload["image_b64"]).resize(size, Image.LANCZOS)
         bridge.set_strip_chunk(chunk, patch)
+        bridge.forget_strip_text()
+        bridge.forget_strip_url()
+    elif action == "set_strip_text":
+        bridge.set_strip_text(payload["text"])
+        bridge.client.publish(STRIP_TEXT_STATE_TOPIC, payload["text"], retain=True)
+    elif action == "set_strip_url":
+        bridge.set_strip_url(payload["url"])
+        bridge.client.publish(STRIP_URL_STATE_TOPIC, payload["url"], retain=True)
     else:
         print(f"Unknown akp05/cmd action: {action!r}")
 
@@ -711,6 +896,8 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         client.subscribe(topic)
     for topic in FOLLOW_SET_TOPICS:
         client.subscribe(topic)
+    client.subscribe(STRIP_TEXT_SET_TOPIC)
+    client.subscribe(STRIP_URL_SET_TOPIC)
     publish_discovery(client)
     client.publish(STATUS_TOPIC, "online", retain=True)
     bridge = bridge_holder.get("bridge")
@@ -752,6 +939,14 @@ def on_message(client, userdata, msg):
             entity_id = msg.payload.decode().strip()
             bridge.set_follow(button, entity_id)
             client.publish(_follow_state_topic(button), entity_id, retain=True)
+        elif msg.topic == STRIP_TEXT_SET_TOPIC:
+            text = msg.payload.decode().strip()
+            bridge.set_strip_text(text)
+            client.publish(STRIP_TEXT_STATE_TOPIC, text, retain=True)
+        elif msg.topic == STRIP_URL_SET_TOPIC:
+            url = msg.payload.decode().strip()
+            bridge.set_strip_url(url)
+            client.publish(STRIP_URL_STATE_TOPIC, url, retain=True)
         elif msg.topic == ENTITY_UPDATE_TOPIC:
             update = json.loads(msg.payload.decode())
             entity_id, text = update.get("entity_id"), update.get("text", "")

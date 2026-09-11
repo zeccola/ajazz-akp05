@@ -72,6 +72,30 @@ Assistant bridge and its web UI.
   python akp05_set_strip_color.py skyblue
   ```
 
+- **`akp05_write_strip_text.py`** — write text to the strip, rendered in
+  Roboto (same rendering as the add-on's per-button Text entities —
+  `akp05_icons.build_text`, now sized for the strip too). Auto-shrinks to
+  fit the width; still-too-wide text overflows off the edges rather than
+  wrapping or scrolling.
+  ```
+  python akp05_write_strip_text.py "Hello there"
+  python akp05_write_strip_text.py "21.4C" "#00ff88"
+  python akp05_write_strip_text.py clear
+  ```
+
+- **`akp05_play_video.py`** — play a video on the strip, frame by frame.
+  Needs `pip install imageio imageio-ffmpeg` (not required for anything
+  else here — kept out of the main Setup above on purpose). Set your
+  expectations first: the strip has no partial-update capability, so
+  every frame is a full re-upload — real-time playback isn't achievable,
+  this samples the source at a low target rate instead (default 4fps)
+  and prints the actually-achieved rate once running.
+  ```
+  python akp05_play_video.py video.mp4
+  python akp05_play_video.py video.mp4 --fps 2 --loop
+  python akp05_play_video.py video.mp4 --mode fill
+  ```
+
 - **`akp05_set_brightness.py`** — set display brightness (buttons + strip
   together). `off` dims to 0% and clears everything to black (destructive —
   wipes images, `on` can't restore them); `on` just restores 100% brightness.

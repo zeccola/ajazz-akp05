@@ -221,3 +221,7 @@ __marimo__/
 ha_config.json
 .akp05_strip_cache.png
 .mdi_cache/
+
+# Webcam captures of the physical device, for visually checking what's
+# actually on screen -- not project content, just a local dev aid.
+test-images/

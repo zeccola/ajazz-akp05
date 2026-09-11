@@ -115,7 +115,8 @@ automatically once an MQTT broker add-on is running, no setup needed.
    "Add Integration" step needed) with a **Brightness** entity, 18 event
    entities (one per button, encoder button, and encoder twist pair),
    and 3 text entities per button (**Icon**, **Text**, **Follow Entity**
-   — 30 total).
+   — 30 total), plus **Strip Text** and **Strip URL** entities for the
+   touch strip.
 
 ## Using it
 
@@ -159,6 +160,28 @@ automatically once an MQTT broker add-on is running, no setup needed.
   to its trigger list (and the matching startup-sync list) for each one
   you want available to follow. A button shows an icon OR a text value,
   never both — whichever you set most recently wins.
+- **Text on the touch strip** — the **Strip Text** entity works exactly
+  like a button's Text entity but renders across the whole 800x112
+  strip: type into it in the UI, or drive it from an automation with
+  `text.set_value` on `text.ajazz_akp05_strip_text`. Auto-shrinks to
+  fit the width; empty clears the strip to black.
+- **A live dashboard card on the touch strip** — design it graphically,
+  no image editing: install [balloob's Puppet add-on](https://github.com/balloob/home-assistant-addons)
+  (add that repo under Add-on store → ⋮ → Repositories, give Puppet a
+  long-lived access token in its configuration), build a dashboard view
+  with the normal card editor containing whatever entities/icons you
+  want, then set the **Strip URL** entity to e.g.
+  `http://homeassistant.local:10000/<your-dashboard>/0?viewport=800x112`.
+  The add-on re-fetches and repaints it every `strip_refresh_seconds`
+  (add-on option, default 30) — a self-updating card on the strip.
+  Puppet also takes `dark`, `theme=...`, and `zoom=...` query
+  parameters if the default render doesn't look right at 112px tall.
+  Any URL that serves an image works, not just Puppet — camera
+  snapshots, grafana panels, whatever. A failed fetch just logs and
+  retries on the next cycle, so a Puppet restart heals on its own.
+  The strip shows text OR the URL's image OR a raw pushed image
+  (`set_strip`/`set_strip_chunk` below) — setting any one replaces
+  (and un-remembers) the others.
 - **Coloring an icon by an entity's on/off state (green/red)** — same
   shared-automation philosophy, different action: trigger on the
   entity's state, call the `akp05/cmd` `set_icon` action below with the
@@ -197,6 +220,13 @@ automatically once an MQTT broker add-on is running, no setup needed.
   # whole touch strip (800x112, auto-resized) or one of its 200px chunks
   {"action": "set_strip", "image_b64": "..."}
   {"action": "set_strip_chunk", "chunk": 12, "image_b64": "..."}
+
+  # text across the whole strip (same code path as the Strip Text entity)
+  {"action": "set_strip_text", "text": "Hello there"}
+
+  # point the strip at an image URL (same code path as the Strip URL
+  # entity -- re-fetched every strip_refresh_seconds until unset)
+  {"action": "set_strip_url", "url": "http://homeassistant.local:10000/strip/0?viewport=800x112"}
 
   # EXPERIMENTAL, unconfirmed on real hardware -- a "HAN" command found
   # in mirajazz's source, distinct from LIG, used by its own sleep()/
