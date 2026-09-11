@@ -63,15 +63,18 @@ crate (github.com/4ndv/mirajazz) and the `opendeck-akp05` OpenDeck plugin
     the usual 3 -- `crt_command` below handles that), and
     opendeck-akp05's `keepalive_task` calls it on a 10-second timer for
     the life of the connection, concurrently with reading input.
-    (Earlier versions here also re-sent the DIS + LIG wake pair on every
-    tick, misreading mirajazz's *lazy, first-call-only* `initialize()`
-    as per-call. DIS is a display re-init and the bare LIG carries
-    brightness 0, so that was a brightness reset every 10 seconds --
-    the "brightness keeps going back down" bug. CONNECT alone now,
-    plus an optional re-assert of the caller's own brightness: set
-    `device.brightness_provider` to a zero-arg callable returning 0-100
-    and each tick also sends LIG with that value, so nothing on the
-    firmware side can drift it either.) `open_device()` below
+    This project's keepalive sends the DIS + bare LIG wake pair first,
+    then CONNECT -- and that pair is NOT optional on this hardware:
+    0.10.1 tried CONNECT alone (matching a literal reading of mirajazz,
+    whose `initialize()` is lazy/first-call-only) and the panel stopped
+    taking image updates after the very first tick. Confirmed on real
+    hardware, reverted in 0.10.2. The catch is that the bare LIG
+    carries brightness 0, so the wake pair on its own was a brightness
+    reset every 10 seconds ("brightness keeps going back down"). Fix:
+    set `device.brightness_provider` to a zero-arg callable returning
+    0-100 and every tick sends LIG with that value right after the
+    wake pair -- exactly the DIS / LIG / LIG-brightness prefix
+    `upload_image` has always used. `open_device()` below
     does the same, transparently, for every caller -- including the
     one-shot scripts (set_image etc.), not just the long-running ones,
     since e.g. "all buttons" or a strip upload can run long enough to
@@ -395,10 +398,12 @@ def upload_image(device, wire_key: int, jpeg_bytes: bytes, brightness: int = 50)
 def _keepalive_loop(device, out_len: int, stop_event: threading.Event, on_disconnect):
     while not stop_event.wait(KEEPALIVE_INTERVAL):
         try:
-            commands = []
-            # Optional: a long-running caller that tracks brightness (the
-            # add-on) can have every tick re-assert it. See the module
-            # docstring's keepalive note for why this exists.
+            # DIS + bare LIG are required here (see module docstring:
+            # CONNECT alone kills image updates after the first tick).
+            commands = minimal_init_sequence(out_len)
+            # The bare LIG carries brightness 0 -- a long-running caller
+            # that tracks brightness (the add-on) re-asserts it right
+            # after, same prefix upload_image uses.
             provider = getattr(device, "brightness_provider", None)
             if provider is not None:
                 pct = max(0, min(100, int(provider())))

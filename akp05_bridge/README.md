@@ -124,13 +124,14 @@ automatically once an MQTT broker add-on is running, no setup needed.
      fixed. 0.10.0: the image-upload sequence sends a brightness command
      as part of waking the panel, and it was hard-coded to 50%, so every
      text/icon refresh (e.g. a sensor value updating) reset it. 0.10.1:
-     the 10-second keepalive was also re-sending the display-init pair
-     (`DIS` + a bare `LIG`, which carries brightness 0) on every tick —
-     a misreading of mirajazz's run-once `initialize()` as per-call —
-     so the panel was reset every 10 seconds regardless. The keepalive
-     now sends only `CONNECT`, like the reference implementations, and
-     re-asserts whatever the Brightness entity currently says on every
-     tick, so nothing can drift it for more than 10 seconds.
+     the 10-second keepalive also sends the display-init pair (`DIS` +
+     a bare `LIG`, which carries brightness 0) on every tick, so the
+     panel was reset every 10 seconds regardless. 0.10.1 tried dropping
+     that pair to send only `CONNECT` like the reference libraries do —
+     on real hardware that made the panel stop taking image updates
+     after the first tick, so 0.10.2 keeps the pair and instead
+     re-sends whatever the Brightness entity currently says right after
+     it, on every tick. The panel now also defaults to 100% on start.
    - **The Log tab is empty or minutes behind** — fixed in 0.10.0
      (Python was buffering its output inside the container).
 3. In Home Assistant: **Settings → Devices & Services → MQTT** — an

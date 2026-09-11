@@ -537,8 +537,11 @@ class Bridge:
     def __init__(self, client: mqtt.Client):
         self.client = client
         self.device = None
-        self.brightness = 50
-        self._last_nonzero_brightness = 50
+        # Panel starts at 100% (the full init sequence itself says 50;
+        # connect_device() sets this right after). The light entity
+        # still adjusts it from there.
+        self.brightness = 100
+        self._last_nonzero_brightness = 100
         self._reconnect_lock = threading.Lock()
         # Persisted across restarts. A button shows an icon OR a text
         # value, never both -- set_icon/set_text each clear the other's
@@ -565,12 +568,14 @@ class Bridge:
 
     def connect_device(self):
         self.device = connect(self._on_report, full_init=True, on_disconnect=self._handle_disconnect)
-        # Every keepalive tick (10s) re-sends the current brightness --
-        # see akp05_device's keepalive note. Belt-and-braces against
-        # anything (ours or the firmware's) drifting it.
+        # Every keepalive tick (10s) re-sends the current brightness
+        # right after its DIS + bare-LIG wake pair (which carries 0) --
+        # see akp05_device's keepalive note. Without this the panel
+        # dropped to minimum brightness every 10 seconds.
         self.device.brightness_provider = lambda: self.brightness
         self.display_on_state = True
-        self.publish_state()
+        # The init sequence just set 50; apply what we actually want.
+        self.set_brightness(self.brightness)
         self._restore_button_displays()
 
     def _handle_disconnect(self):
