@@ -565,6 +565,10 @@ class Bridge:
 
     def connect_device(self):
         self.device = connect(self._on_report, full_init=True, on_disconnect=self._handle_disconnect)
+        # Every keepalive tick (10s) re-sends the current brightness --
+        # see akp05_device's keepalive note. Belt-and-braces against
+        # anything (ours or the firmware's) drifting it.
+        self.device.brightness_provider = lambda: self.brightness
         self.display_on_state = True
         self.publish_state()
         self._restore_button_displays()
@@ -708,6 +712,9 @@ class Bridge:
         send_commands(self.device, [
             crt_command("DIS", [], out_len),
             crt_command("LIG", [0x00, 0x00], out_len),
+            # Re-assert brightness right after the wake pair, same as
+            # upload_image does -- the bare LIG above carries 0.
+            crt_command("LIG", [0x00, 0x00, self.brightness], out_len),
             crt_command("CLE", [0x00, 0x00, 0x00, wire_key], out_len),
             crt_command("STP", [], out_len),
         ])

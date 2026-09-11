@@ -59,11 +59,19 @@ crate (github.com/4ndv/mirajazz) and the `opendeck-akp05` OpenDeck plugin
     a button press partially wakes it, but state/images are lost) --
     confirmed by checking both reference implementations, since this
     project's own testing hit exactly that symptom: mirajazz's
-    `Device::keep_alive()` re-sends the minimal wake sequence (DIS +
-    LIG) plus a `"CONNECT"` command (7 letters, not the usual 3 --
-    `crt_command` below handles that), and opendeck-akp05's
-    `keepalive_task` calls it on a 10-second timer for the life of the
-    connection, concurrently with reading input. `open_device()` below
+    `Device::keep_alive()` sends a `"CONNECT"` command (7 letters, not
+    the usual 3 -- `crt_command` below handles that), and
+    opendeck-akp05's `keepalive_task` calls it on a 10-second timer for
+    the life of the connection, concurrently with reading input.
+    (Earlier versions here also re-sent the DIS + LIG wake pair on every
+    tick, misreading mirajazz's *lazy, first-call-only* `initialize()`
+    as per-call. DIS is a display re-init and the bare LIG carries
+    brightness 0, so that was a brightness reset every 10 seconds --
+    the "brightness keeps going back down" bug. CONNECT alone now,
+    plus an optional re-assert of the caller's own brightness: set
+    `device.brightness_provider` to a zero-arg callable returning 0-100
+    and each tick also sends LIG with that value, so nothing on the
+    firmware side can drift it either.) `open_device()` below
     does the same, transparently, for every caller -- including the
     one-shot scripts (set_image etc.), not just the long-running ones,
     since e.g. "all buttons" or a strip upload can run long enough to
@@ -387,7 +395,16 @@ def upload_image(device, wire_key: int, jpeg_bytes: bytes, brightness: int = 50)
 def _keepalive_loop(device, out_len: int, stop_event: threading.Event, on_disconnect):
     while not stop_event.wait(KEEPALIVE_INTERVAL):
         try:
-            send_commands(device, minimal_init_sequence(out_len) + [keep_alive_command(out_len)])
+            commands = []
+            # Optional: a long-running caller that tracks brightness (the
+            # add-on) can have every tick re-assert it. See the module
+            # docstring's keepalive note for why this exists.
+            provider = getattr(device, "brightness_provider", None)
+            if provider is not None:
+                pct = max(0, min(100, int(provider())))
+                commands.append(crt_command("LIG", [0x00, 0x00, pct], out_len))
+            commands.append(keep_alive_command(out_len))
+            send_commands(device, commands)
         except Exception:
             if on_disconnect is not None:
                 try:
