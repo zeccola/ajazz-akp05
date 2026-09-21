@@ -50,6 +50,17 @@ What gets published:
     auto-shrunk to fit). A button shows an icon OR a text value, never
     both; setting one clears the other's remembered state for that
     button.
+  - homeassistant/text/akp05/bar_<n>_icon/config (retained) -- same idea
+    as button_<n>_icon, but for one of the touch strip's four 200x112
+    splits (<n> is 1-4, left to right). Renders via akp05_icons.build_icon
+    sized to the split, then composites into the strip cache and
+    re-uploads the whole 800x112 strip (same mechanism set_strip_chunk/
+    akp05_set_image.py already use for the CLI's "chunk 11-14" targets --
+    bar <n> is just the friendlier 1-4 name for the same four slots).
+  - homeassistant/text/akp05/bar_<n>_text/config (retained) -- the
+    button_<n>_text equivalent for the same split: an already-formatted
+    string rendered via build_text at the split's size. A split shows an
+    icon OR a text value, never both, same rule as a button.
   - homeassistant/text/akp05/strip_text/config (retained) -- one more
     `text` entity, same idea as button_<n>_text but rendering to the
     full 800x112 touch strip (build_text with the strip's size --
@@ -59,7 +70,11 @@ What gets published:
     text OR whatever image was last pushed via set_strip/
     set_strip_chunk, never both -- setting either forgets the other
     (the strip is a single full-write surface, so the add-on remembers
-    at most one thing to restore after a reconnect/display_on).
+    at most one thing to restore after a reconnect/display_on). Setting
+    a bar's icon/text also forgets this (and strip_url) -- they all
+    paint over the same strip, so only the most recent of "whole-strip
+    text", "whole-strip URL", "raw image/chunks", or "per-bar icon/text"
+    sticks around to be restored later.
   - homeassistant/text/akp05/strip_url/config (retained) -- the third
     strip mode: set an image URL and the add-on re-fetches and paints
     it every strip_refresh_seconds (add-on option, default 30). Built
@@ -90,12 +105,16 @@ What gets published:
     silently rejected rather than echoed, the only feedback an MQTT
     text entity can give); text always echoes since there's nothing to
     validate.
+  - akp05/bar_<n>/icon/state, akp05/bar_<n>/text/state -- same rules as
+    the button versions above, for the strip split <n> (1-4).
 
 What it subscribes to:
   - akp05/power/set, akp05/brightness/set -- the light entity's own
     command topics ("ON"/"OFF" and "0".."100" respectively).
   - akp05/button_<n>/icon/set, .../text/set -- the two text entities'
     command topics above; empty string clears the button.
+  - akp05/bar_<n>/icon/set, .../text/set -- same as the button ones,
+    for strip split <n> (1-4); empty string clears just that split.
   - akp05/strip/text/set -- the Strip Text entity's command topic;
     empty string clears the strip to black.
   - akp05/strip/url/set -- the Strip URL entity's command topic; empty
@@ -221,6 +240,32 @@ def _text_state_topic(button: int) -> str:
 TEXT_SET_TOPICS = {_text_set_topic(button): button for button in range(1, 11)}
 
 
+STRIP_BAR_COUNT = 4  # the four 200px-wide splits of the 800x112 strip
+STRIP_BAR_SIZE = (STRIP_CHUNK_WIDTH, STRIP_IMAGE_SIZE[1])
+
+
+def _bar_icon_set_topic(bar: int) -> str:
+    return f"{DEVICE_ID}/bar_{bar}/icon/set"
+
+
+def _bar_icon_state_topic(bar: int) -> str:
+    return f"{DEVICE_ID}/bar_{bar}/icon/state"
+
+
+BAR_ICON_SET_TOPICS = {_bar_icon_set_topic(bar): bar for bar in range(1, STRIP_BAR_COUNT + 1)}
+
+
+def _bar_text_set_topic(bar: int) -> str:
+    return f"{DEVICE_ID}/bar_{bar}/text/set"
+
+
+def _bar_text_state_topic(bar: int) -> str:
+    return f"{DEVICE_ID}/bar_{bar}/text/state"
+
+
+BAR_TEXT_SET_TOPICS = {_bar_text_set_topic(bar): bar for bar in range(1, STRIP_BAR_COUNT + 1)}
+
+
 STRIP_TEXT_SET_TOPIC = f"{DEVICE_ID}/strip/text/set"
 STRIP_TEXT_STATE_TOPIC = f"{DEVICE_ID}/strip/text/state"
 STRIP_URL_SET_TOPIC = f"{DEVICE_ID}/strip/url/set"
@@ -235,6 +280,8 @@ DISPLAY_ON_PAYLOAD = "ON"
 
 ICONS_PATH = "/data/button_icons.json"
 TEXTS_PATH = "/data/button_texts.json"
+BAR_ICONS_PATH = "/data/bar_icons.json"
+BAR_TEXTS_PATH = "/data/bar_texts.json"
 STRIP_TEXT_PATH = "/data/strip_text.json"
 STRIP_URL_PATH = "/data/strip_url.json"
 
@@ -424,6 +471,33 @@ def _text_discovery_payload(button: int) -> dict:
     }
 
 
+def _bar_icon_discovery_payload(bar: int) -> dict:
+    # Same idea as _icon_discovery_payload, one per 200x112 strip split
+    # instead of per button.
+    return {
+        "name": f"Bar {bar} Icon",
+        "unique_id": f"{DEVICE_ID}_bar_{bar}_icon",
+        "command_topic": _bar_icon_set_topic(bar),
+        "state_topic": _bar_icon_state_topic(bar),
+        "icon": "mdi:image-edit-outline",
+        "availability_topic": STATUS_TOPIC,
+        "device": DEVICE_INFO,
+    }
+
+
+def _bar_text_discovery_payload(bar: int) -> dict:
+    # Same idea as _text_discovery_payload, one per strip split.
+    return {
+        "name": f"Bar {bar} Text",
+        "unique_id": f"{DEVICE_ID}_bar_{bar}_text",
+        "command_topic": _bar_text_set_topic(bar),
+        "state_topic": _bar_text_state_topic(bar),
+        "icon": "mdi:format-text",
+        "availability_topic": STATUS_TOPIC,
+        "device": DEVICE_INFO,
+    }
+
+
 def _strip_url_discovery_payload() -> dict:
     # The "pretty card on the strip" answer: point this at anything that
     # serves an image over HTTP and the add-on re-fetches it every
@@ -501,6 +575,17 @@ def publish_discovery(client: mqtt.Client):
             json.dumps(_text_discovery_payload(button)),
             retain=True,
         )
+    for bar in range(1, STRIP_BAR_COUNT + 1):
+        client.publish(
+            f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/bar_{bar}_icon/config",
+            json.dumps(_bar_icon_discovery_payload(bar)),
+            retain=True,
+        )
+        client.publish(
+            f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/bar_{bar}_text/config",
+            json.dumps(_bar_text_discovery_payload(bar)),
+            retain=True,
+        )
     client.publish(
         f"{DISCOVERY_PREFIX}/text/{DEVICE_ID}/strip_text/config",
         json.dumps(_strip_text_discovery_payload()),
@@ -554,6 +639,10 @@ class Bridge:
         # any given button in it at a time.
         self.button_icons: dict[int, str] = {int(k): v for k, v in _load_json(ICONS_PATH, {}).items()}
         self.button_texts: dict[int, str] = {int(k): v for k, v in _load_json(TEXTS_PATH, {}).items()}
+        # Same icon-or-text-never-both rule as buttons, keyed 1-4 for the
+        # strip's four splits instead of 1-10 for the buttons.
+        self.bar_icons: dict[int, str] = {int(k): v for k, v in _load_json(BAR_ICONS_PATH, {}).items()}
+        self.bar_texts: dict[int, str] = {int(k): v for k, v in _load_json(BAR_TEXTS_PATH, {}).items()}
         # What the Display switch reports: False only after display_off
         # (dimmed to 0 AND wiped -- see clear_all), True again on
         # display_on or a (re)connect's full init.
@@ -615,7 +704,11 @@ class Bridge:
         but nothing was re-uploading whatever each button is supposed to
         show, so restarting silently blanked them until something set a
         new value (the only thing that actually re-triggers a render).
-        Re-render everything we remember, icons and text values alike."""
+        Re-render everything we remember, icons and text values alike --
+        buttons, strip bars, then whichever whole-strip mode (text/URL)
+        was active (bars restore first since setting a bar forgets
+        whole-strip text/URL, so the two groups shouldn't both be
+        populated at once in practice)."""
         for button, icon in list(self.button_icons.items()):
             try:
                 self.set_icon(button, icon, None)
@@ -626,6 +719,16 @@ class Bridge:
                 self.set_text(button, text)
             except Exception as exc:  # noqa: BLE001 - one bad value shouldn't block the rest
                 print(f"Couldn't restore text for button {button} ({text!r}): {exc}")
+        for bar, icon in list(self.bar_icons.items()):
+            try:
+                self.set_bar_icon(bar, icon, None)
+            except Exception as exc:  # noqa: BLE001 - one bad icon shouldn't block the rest
+                print(f"Couldn't restore icon for bar {bar} ({icon!r}): {exc}")
+        for bar, text in list(self.bar_texts.items()):
+            try:
+                self.set_bar_text(bar, text)
+            except Exception as exc:  # noqa: BLE001 - one bad value shouldn't block the rest
+                print(f"Couldn't restore text for bar {bar} ({text!r}): {exc}")
         if self.strip_text:
             try:
                 self.set_strip_text(self.strip_text)
@@ -829,6 +932,41 @@ class Bridge:
         if self.button_icons.pop(button, None) is not None:
             _save_json(ICONS_PATH, self.button_icons)
 
+    def set_bar_icon(self, bar: int, icon: str, state: str | None):
+        """Same idea as set_icon, for one of the strip's four splits --
+        renders into that split's slice of the strip cache via
+        set_strip_chunk (bar 1-4 maps onto the CLI's chunk 11-14
+        numbering) and re-uploads the whole strip. Takes over the strip
+        from whole-strip text/URL mode, same as a raw set_strip_chunk."""
+        is_on = {"on": True, "off": False}.get(state)
+        img = build_icon(icon, is_on, size=STRIP_BAR_SIZE)  # raises KeyError for an unrecognized name
+        self.set_strip_chunk(bar + 10, img)
+        self.forget_strip_text()
+        self.forget_strip_url()
+        self.bar_icons[bar] = icon
+        _save_json(BAR_ICONS_PATH, self.bar_icons)
+        if self.bar_texts.pop(bar, None) is not None:
+            _save_json(BAR_TEXTS_PATH, self.bar_texts)
+
+    def set_bar_text(self, bar: int, text: str):
+        img = build_text(text, size=STRIP_BAR_SIZE)
+        self.set_strip_chunk(bar + 10, img)
+        self.forget_strip_text()
+        self.forget_strip_url()
+        self.bar_texts[bar] = text
+        _save_json(BAR_TEXTS_PATH, self.bar_texts)
+        if self.bar_icons.pop(bar, None) is not None:
+            _save_json(BAR_ICONS_PATH, self.bar_icons)
+
+    def clear_bar(self, bar: int):
+        self.set_strip_chunk(bar + 10, Image.new("RGB", STRIP_BAR_SIZE, (0, 0, 0)))
+        self.forget_strip_text()
+        self.forget_strip_url()
+        if self.bar_icons.pop(bar, None) is not None:
+            _save_json(BAR_ICONS_PATH, self.bar_icons)
+        if self.bar_texts.pop(bar, None) is not None:
+            _save_json(BAR_TEXTS_PATH, self.bar_texts)
+
     @staticmethod
     def _classify(key: int, state: int):
         """Returns (object_id, event_type) matching _event_entities()."""
@@ -879,6 +1017,12 @@ def _handle_cmd(bridge: Bridge, payload: dict):
         bridge.set_icon(int(payload["button"]), payload["icon"], payload.get("state"))
     elif action == "set_text":
         bridge.set_text(int(payload["button"]), payload["text"])
+    elif action == "set_bar_icon":
+        bridge.set_bar_icon(int(payload["bar"]), payload["icon"], payload.get("state"))
+    elif action == "set_bar_text":
+        bridge.set_bar_text(int(payload["bar"]), payload["text"])
+    elif action == "clear_bar":
+        bridge.clear_bar(int(payload["bar"]))
     elif action == "set_image":
         img = _decode_image(payload["image_b64"])
         bridge.set_button_image(int(payload["button"]), encode_image(img, BUTTON_IMAGE_SIZE))
@@ -928,6 +1072,10 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     for topic in ICON_SET_TOPICS:
         client.subscribe(topic)
     for topic in TEXT_SET_TOPICS:
+        client.subscribe(topic)
+    for topic in BAR_ICON_SET_TOPICS:
+        client.subscribe(topic)
+    for topic in BAR_TEXT_SET_TOPICS:
         client.subscribe(topic)
     client.subscribe(STRIP_TEXT_SET_TOPIC)
     client.subscribe(STRIP_URL_SET_TOPIC)
@@ -990,6 +1138,25 @@ def on_message(client, userdata, msg):
             else:
                 bridge.clear_button(button)
             client.publish(_text_state_topic(button), text, retain=True)
+        elif msg.topic in BAR_ICON_SET_TOPICS:
+            bar = BAR_ICON_SET_TOPICS[msg.topic]
+            icon = msg.payload.decode().strip()
+            print(f"Bar {bar} icon <- {icon!r}")
+            if icon:
+                bridge.set_bar_icon(bar, icon, None)
+            else:
+                bridge.clear_bar(bar)
+            # Only echoed back on success, same reasoning as button icons.
+            client.publish(_bar_icon_state_topic(bar), icon, retain=True)
+        elif msg.topic in BAR_TEXT_SET_TOPICS:
+            bar = BAR_TEXT_SET_TOPICS[msg.topic]
+            text = msg.payload.decode().strip()
+            print(f"Bar {bar} text <- {text!r}")
+            if text:
+                bridge.set_bar_text(bar, text)
+            else:
+                bridge.clear_bar(bar)
+            client.publish(_bar_text_state_topic(bar), text, retain=True)
         elif msg.topic == STRIP_TEXT_SET_TOPIC:
             text = msg.payload.decode().strip()
             print(f"Strip text <- {text!r}")

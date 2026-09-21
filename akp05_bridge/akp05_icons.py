@@ -125,17 +125,20 @@ def icon_exists(name: str) -> bool:
     return resolve_icon_name(name) in _codepoint_map()
 
 
-def build_icon(name: str, is_on: bool | None) -> Image.Image:
+def build_icon(name: str, is_on: bool | None, size=BUTTON_IMAGE_SIZE) -> Image.Image:
     """Render any MDI icon name (e.g. 'floor-lamp-outline', 'fan',
     'light-switch') colored by state. Raises KeyError with a clear
-    message if the name isn't a real MDI icon."""
+    message if the name isn't a real MDI icon. Defaults to a button's
+    size; pass a strip chunk's size (e.g. (200, 112)) to center the same
+    glyph in a wider, non-square tile -- glyph_size below is derived from
+    min(size), so a wide tile just gets extra side margin instead of a
+    stretched icon."""
     codepoints = _codepoint_map()
     key = resolve_icon_name(name)
     codepoint = codepoints.get(key)
     if codepoint is None:
         raise KeyError(f"'{name}' isn't a known MDI icon name -- check https://pictogrammers.com/library/mdi/")
 
-    size = BUTTON_IMAGE_SIZE
     img = Image.new("RGB", size, (8, 8, 8))
     draw = ImageDraw.Draw(img)
     color = state_color(is_on)

@@ -163,9 +163,10 @@ automatically once an MQTT broker add-on is running, no setup needed.
    "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
    "Add Integration" step needed) with a **Brightness** entity, 18 event
    entities (one per button, encoder button, and encoder twist pair),
-   2 text entities per button (**Icon** and **Text** — 20 total), a
-   **Display** on/off switch, plus **Strip Text** and **Strip URL**
-   entities for the touch strip.
+   2 text entities per button (**Icon** and **Text** — 20 total), 2 text
+   entities per strip split (**Bar 1-4 Icon** and **Bar 1-4 Text** — 8
+   total), a **Display** on/off switch, plus **Strip Text** and
+   **Strip URL** entities for the touch strip as a whole.
 
 ## Using it
 
@@ -217,6 +218,17 @@ automatically once an MQTT broker add-on is running, no setup needed.
   used to do this were removed in 0.10.0; the direct form is simpler.)
   A button shows an icon OR a text value, never both — whichever you
   set most recently wins.
+- **Icon or text on one strip split — "Bar 1"-"Bar 4"** — the touch
+  strip is split into four 200x112 slices left to right, each with its
+  own **Bar N Icon** and **Bar N Text** entities that work exactly like
+  a button's — type an MDI name into the Icon entity, or an
+  already-formatted string into the Text entity, and just that quarter
+  of the strip updates (the rest is left alone; the add-on composites
+  the change into the strip's cache and re-uploads the full 800x112
+  image, same as `set_strip_chunk` below). A split shows an icon OR a
+  text value, never both, and setting either takes the whole strip out
+  of Strip Text/Strip URL mode (they all paint over the same surface —
+  see below).
 - **Text on the touch strip** — the **Strip Text** entity works exactly
   like a button's Text entity but renders across the whole 800x112
   strip: type into it in the UI, or drive it from an automation with
@@ -237,8 +249,9 @@ automatically once an MQTT broker add-on is running, no setup needed.
   snapshots, grafana panels, whatever. A failed fetch just logs and
   retries on the next cycle, so a Puppet restart heals on its own.
   The strip shows text OR the URL's image OR a raw pushed image
-  (`set_strip`/`set_strip_chunk` below) — setting any one replaces
-  (and un-remembers) the others.
+  (`set_strip`/`set_strip_chunk` below) OR whatever the four Bar
+  icon/text entities last set — setting any one replaces (and
+  un-remembers) the others.
 - **Coloring an icon by an entity's on/off state (green/red)** — same
   shared-automation philosophy, different action: trigger on the
   entity's state, call the `akp05/cmd` `set_icon` action below with the
@@ -255,6 +268,12 @@ automatically once an MQTT broker add-on is running, no setup needed.
 
   # push a text value (same code path as the Button N Text entity)
   {"action": "set_text", "button": 3, "text": "21.4°C"}
+
+  # same two actions, for one of the strip's four splits (1-4) instead
+  # of a button -- same code paths as the Bar N Icon/Text entities
+  {"action": "set_bar_icon", "bar": 2, "icon": "thermometer", "state": "on"}
+  {"action": "set_bar_text", "bar": 2, "text": "21.4°C"}
+  {"action": "clear_bar", "bar": 2}
 
   # raw base64 PNG/JPEG on a button
   {"action": "set_image", "button": 3, "image_b64": "..."}
@@ -315,6 +334,10 @@ automatically once an MQTT broker add-on is running, no setup needed.
 | `akp05/button_<n>/icon/state`| publishes | Echoes the name back, retained, only on a successful render |
 | `akp05/button_<n>/text/set`  | subscribes| Already-formatted string, e.g. `21.4°C`; empty clears the button. |
 | `akp05/button_<n>/text/state`| publishes | Echoes the value back, retained |
+| `akp05/bar_<n>/icon/set`     | subscribes| MDI icon name for strip split `<n>` (`1`-`4`, left to right); empty clears just that split. |
+| `akp05/bar_<n>/icon/state`   | publishes | Echoes the name back, retained, only on a successful render |
+| `akp05/bar_<n>/text/set`     | subscribes| Already-formatted string for strip split `<n>`; empty clears just that split. |
+| `akp05/bar_<n>/text/state`   | publishes | Echoes the value back, retained |
 | `akp05/strip/text/set`       | subscribes| Text for the whole strip; empty clears it to black. |
 | `akp05/strip/text/state`     | publishes | Echoes the text back, retained |
 | `akp05/strip/url/set`        | subscribes| Image URL to poll onto the strip; empty leaves URL mode. |
