@@ -2,8 +2,8 @@
 
 Owns the USB connection to the Ajazz AKP05 on your Home Assistant OS /
 Supervised host and exposes it to Home Assistant purely via **MQTT
-discovery** — buttons/encoders become native automation triggers,
-brightness becomes a light entity, all automatically. This is the only
+discovery** — buttons/encoders become native automation triggers, the
+screen becomes an on/off switch, all automatically. This is the only
 component you need to install; there's no separate integration to copy
 into `/config/custom_components/`.
 
@@ -172,6 +172,19 @@ automatically once an MQTT broker add-on is running, no setup needed.
      falls back to black instead of failing every strip write from then
      on, and that cache moved to `/data` so a rebuild no longer blanks
      the other three bars on the next Bar write.
+   - **Icons render but text doesn't (or vice versa)** — fixed in
+     0.12.0. The two fonts used to come from two different hosts: MDI
+     from jsdelivr, Roboto from `raw.githubusercontent.com`. A network
+     that could reach one but not the other gave working icons and dead
+     text, since `build_icon` and `build_text` are the only things that
+     differ between those two paths. Both now come from jsdelivr, and
+     Roboto is the static Regular rather than a variable font, so
+     there's one host and one format to go wrong instead of two of
+     each. Separately, a font file that exists but won't parse — a
+     partial download from before 0.11.1 wrote these atomically — used
+     to fail every render forever, because the cache check only tests
+     whether the file exists and so nothing re-fetched it; that now
+     gets discarded and re-downloaded once, automatically.
    - **Getting a useful log** — the add-on's Log tab only shows the
      last ~100 lines, which a few restarts fill with container
      start/stop noise. Use **Settings → System → Logs**, pick "AKP05
@@ -181,7 +194,7 @@ automatically once an MQTT broker add-on is running, no setup needed.
      (Python was buffering its output inside the container).
 3. In Home Assistant: **Settings → Devices & Services → MQTT** — an
    "Ajazz AKP05" device should appear (MQTT discovery is automatic, no
-   "Add Integration" step needed) with a **Brightness** entity, 18 event
+   "Add Integration" step needed) with 18 event
    entities (one per button, encoder button, and encoder twist pair),
    2 text entities per button (**Icon** and **Text** — 20 total), 2 text
    entities per strip split (**Bar 1-4 Icon** and **Bar 1-4 Text** — 8
@@ -202,17 +215,20 @@ automatically once an MQTT broker add-on is running, no setup needed.
     the *only* mechanism and silently produced zero usable triggers with
     no error logged anywhere — kept alongside the entities now since
     it's harmless if it does work for you, but don't rely on it alone.
-- **Brightness** — the light entity. Turning it off sets brightness to
-  0% only — it does **not** wipe button/strip images, unlike the CLI's
-  `akp05_set_brightness.py off`. Deliberately kept separate (see
-  `display_off`/`display_on` below) so toggling this in a routine
-  automation can't accidentally erase your icons.
 - **Turning the screen off and back on** — the **Display** switch
-  (`switch.ajazz_akp05_display`). Off dims to 0% *and* wipes every
-  button/strip image to actual black — brightness 0 alone leaves the
-  content faintly visible on this panel. On restores the previous
+  (`switch.ajazz_akp05_display`), the only screen control since 0.12.0
+  (the Brightness light entity is gone — it and this switch were two
+  overlapping controls, and turning the light off dimmed to 0% without
+  wiping, which looks identical to Display off but isn't). Off dims to
+  0% *and* wipes every button/strip image to actual black — brightness 0
+  alone leaves the content faintly visible on this panel. On restores
   brightness and re-renders everything the add-on remembers (icons,
-  text values, strip text/URL). Put it on a dashboard, use
+  text values, strip text/URL). Note that last part: **On can only bring
+  back what's remembered**, so if no button or bar has anything stored,
+  it lights a screen that Off wiped and you get a blank panel — which
+  looks like the switch did nothing. The panel runs at 100% internally;
+  `akp05/cmd`'s `set_brightness` still changes that if you want it
+  dimmer. Put it on a dashboard, use
   `switch.turn_on`/`switch.turn_off`/`switch.toggle` from a script or
   automation, or expose it to a voice assistant — it's the entity form
   of the `display_off`/`display_on` commands below, same code path,
@@ -346,10 +362,6 @@ automatically once an MQTT broker add-on is running, no setup needed.
 | `akp05/status`               | publishes | `online` / `offline` (retained, LWT)  |
 | `akp05/event/<id>`           | publishes | `{"event_type": "pressed"}` etc., not retained. `<id>` is `button_1`..`button_10`, `encoder_1_button`..`encoder_4_button`, `encoder_1`..`encoder_4` (twist). Feeds the event entities. |
 | `akp05/event`                | publishes | `<event_type>:<id>`, not retained. Feeds only the device_automation triggers (raw payload match, not JSON). |
-| `akp05/power/set`            | subscribes| `ON` / `OFF`                          |
-| `akp05/power/state`          | publishes | `ON` / `OFF` (retained)               |
-| `akp05/brightness/set`       | subscribes| `0`-`100`                             |
-| `akp05/brightness/state`     | publishes | `0`-`100` (retained)                  |
 | `akp05/button_<n>/icon/set`  | subscribes| MDI icon name, e.g. `floor-lamp-outline`; empty clears the button. `<n>` is `1`-`10`. |
 | `akp05/button_<n>/icon/state`| publishes | Echoes the name back, retained, only on a successful render |
 | `akp05/button_<n>/text/set`  | subscribes| Already-formatted string, e.g. `21.4°C`; empty clears the button. |

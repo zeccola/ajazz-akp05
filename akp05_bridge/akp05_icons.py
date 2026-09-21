@@ -12,8 +12,8 @@ On first use, downloads and caches these next to this file in
   - materialdesignicons-webfont.ttf + meta.json: the MDI icon font and
     its name -> codepoint lookup, from the @mdi npm packages via jsdelivr
     (~1.3MB + ~2MB).
-  - Roboto.ttf: from Google's own font repo (~1.7MB, a single variable
-    font covering every weight/width, loaded plain/default here).
+  - Roboto.ttf: static Regular (~170KB), from the same jsdelivr CDN as
+    the MDI font above -- see ROBOTO_URL for why both live on one host.
 
 Needs internet access on first use per font; after that, everything is
 read from the local cache and no network call is needed to render. The
@@ -37,13 +37,16 @@ META_PATH = os.path.join(CACHE_DIR, "meta.json")
 FONT_URL = "https://cdn.jsdelivr.net/npm/@mdi/font@latest/fonts/materialdesignicons-webfont.ttf"
 META_URL = "https://cdn.jsdelivr.net/npm/@mdi/svg@latest/meta.json"
 
-# Same font Home Assistant's own frontend uses -- confirmed the actual
-# path directly (google/fonts stores it under ofl/, not apache/ as an
-# older Roboto release did; it's OFL-licensed now, not Apache 2.0,
-# though both are free to embed same as MDI's font above). Single
-# variable-font file (wdth/wght axes) rather than split static weights;
-# loaded plain (default instance, normal weight) for simplicity.
-ROBOTO_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/Roboto%5Bwdth,wght%5D.ttf"
+# Same font Home Assistant's own frontend uses (OFL-licensed, free to
+# embed same as MDI's font above). Served from jsdelivr -- the same host
+# as the MDI font -- and deliberately NOT from raw.githubusercontent.com
+# where this used to live: that split the two fonts across two hosts, so
+# a network that could reach one but not the other produced working
+# icons and dead text, which is exactly what got reported. One host,
+# one reachability question. Static Regular rather than google/fonts'
+# variable Roboto[wdth,wght].ttf for the same reason -- one less thing
+# that can behave differently on a given Pillow/FreeType build.
+ROBOTO_URL = "https://cdn.jsdelivr.net/npm/@expo-google-fonts/roboto@latest/Roboto_400Regular.ttf"
 ROBOTO_PATH = os.path.join(CACHE_DIR, "Roboto.ttf")
 
 COLOR_ON = (40, 200, 60)
@@ -102,17 +105,36 @@ def _codepoint_map() -> dict[str, str]:
     return _codepoint_by_name
 
 
+def _load_font(path: str, size: int, ensure) -> ImageFont.FreeTypeFont:
+    """Load a cached font, repairing it once if it won't open. The
+    caching checks only test whether the file exists, so a file that's
+    there but unparseable -- a partial download from before these were
+    written atomically, most likely -- would fail every render from then
+    on and nothing would ever re-fetch it. Neither a restart nor a
+    reinstall clears that; deleting and re-downloading once does."""
+    ensure()
+    try:
+        return ImageFont.truetype(path, size)
+    except OSError as exc:
+        print(f"Font at {path} wouldn't load ({exc}) -- discarding it and re-downloading once")
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        ensure()
+        return ImageFont.truetype(path, size)
+
+
 def _font(size: int) -> ImageFont.FreeTypeFont:
     if size not in _font_cache:
-        _ensure_cached()
-        _font_cache[size] = ImageFont.truetype(FONT_PATH, size)
+        _font_cache[size] = _load_font(FONT_PATH, size, _ensure_cached)
     return _font_cache[size]
 
 
 def _ensure_roboto_cached():
     os.makedirs(CACHE_DIR, exist_ok=True)
     if not os.path.exists(ROBOTO_PATH):
-        _download(ROBOTO_URL, ROBOTO_PATH, "Roboto font, ~1.7MB")
+        _download(ROBOTO_URL, ROBOTO_PATH, "Roboto font, ~170KB")
 
 
 def prefetch_fonts():
@@ -130,8 +152,7 @@ def prefetch_fonts():
 
 def _roboto_font(size: int) -> ImageFont.FreeTypeFont:
     if size not in _roboto_cache:
-        _ensure_roboto_cached()
-        _roboto_cache[size] = ImageFont.truetype(ROBOTO_PATH, size)
+        _roboto_cache[size] = _load_font(ROBOTO_PATH, size, _ensure_roboto_cached)
     return _roboto_cache[size]
 
 

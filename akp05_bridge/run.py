@@ -12,12 +12,13 @@ been seen not to work in some setups) and the MQTT integration
 configured in Home Assistant itself.
 
 What gets published:
-  - homeassistant/light/akp05/brightness/config (retained) -- one light
-    entity for panel brightness (buttons + strip together, same as the
-    device's own LIG command). Turning it off just sets brightness to 0
-    -- it does NOT wipe button/strip images (see akp05/cmd's clear_all
-    for that, kept as an explicit action, never a side effect of the
-    light).
+  - (removed in 0.12.0: the Brightness light entity. It and the Display
+    switch were two overlapping screen controls -- turning the light off
+    dimmed to 0 without wiping, which looks identical to Display off but
+    isn't, and both wrote the same brightness state. The Display switch
+    is the only one now. The panel still runs at ON_BRIGHTNESS
+    internally, since a brightness value has to go out with every
+    wake/upload, and akp05/cmd's set_brightness action still sets it.)
   - homeassistant/event/akp05/<id>/config (retained) -- one MQTT `event`
     entity per button, encoder button, and encoder twist pair (18
     total). Each is a real entity (Settings -> Devices & Services ->
@@ -109,8 +110,6 @@ What gets published:
     the button versions above, for the strip split <n> (1-4).
 
 What it subscribes to:
-  - akp05/power/set, akp05/brightness/set -- the light entity's own
-    command topics ("ON"/"OFF" and "0".."100" respectively).
   - akp05/button_<n>/icon/set, .../text/set -- the two text entities'
     command topics above; empty string clears the button.
   - akp05/bar_<n>/icon/set, .../text/set -- same as the button ones,
@@ -135,15 +134,22 @@ What it subscribes to:
     experimental_sleep. See the add-on's README for the payload shapes;
     call these from automations with the mqtt.publish service.
 
-akp05/cmd's display_off/display_on are a deliberate pair, separate from
-the light entity's own on/off: the light is non-destructive brightness
-only (see above), while display_off actually blacks the screen (brightness
-alone doesn't -- LIG is backlight/PWM only, content stays faintly visible
-at 0%, confirmed in akp05_set_brightness.py's docstring) by also wiping
-every button/strip image, and display_on is the new way back -- restores
-brightness and re-renders everything that was showing (icons and text
-values alike), which previously needed a full add-on restart to get back
+akp05/cmd's display_off/display_on (and the Display switch, which is the
+same code path) actually black the screen: brightness alone doesn't --
+LIG is backlight/PWM only, content stays faintly visible at 0%, confirmed
+in akp05_set_brightness.py's docstring -- so display_off also wipes every
+button/strip image, and display_on is the way back, restoring brightness
+and re-rendering everything that was showing (icons and text values
+alike), which previously needed a full add-on restart to get back
 (connect_device()'s own restore logic, now also reachable on demand).
+
+Note display_on can only bring back what the add-on still remembers: if
+nothing is stored for any button/bar, it raises brightness onto a screen
+display_off wiped and you get a lit but blank panel, which reads as "the
+switch did nothing". A render that fails (an unreachable font, say --
+see akp05_icons) has the same effect for everything it covers, since
+each button/bar is restored independently and one failure only skips
+that one.
 
 experimental_sleep is a different, unconfirmed attempt at a *real* power
 state rather than dim+wipe -- a "HAN" command found in mirajazz's source
@@ -209,11 +215,13 @@ STATUS_TOPIC = f"{DEVICE_ID}/status"
 # topics event entities use, since MQTT device triggers match on a raw
 # payload string, not a JSON field.
 TRIGGER_EVENT_TOPIC = f"{DEVICE_ID}/event"
-POWER_SET_TOPIC = f"{DEVICE_ID}/power/set"
-POWER_STATE_TOPIC = f"{DEVICE_ID}/power/state"
-BRIGHTNESS_SET_TOPIC = f"{DEVICE_ID}/brightness/set"
-BRIGHTNESS_STATE_TOPIC = f"{DEVICE_ID}/brightness/state"
 CMD_TOPIC = f"{DEVICE_ID}/cmd"
+
+# What the panel runs at when the display is on. The Brightness light
+# entity that used to make this adjustable from the UI is gone (0.12.0);
+# a brightness value still has to be sent with every wake/upload, and
+# akp05/cmd's set_brightness action can still change it.
+ON_BRIGHTNESS = 100
 
 
 def _icon_set_topic(button: int) -> str:
@@ -366,6 +374,16 @@ def _stale_retained_topics() -> list[str]:
     # 0.9.1's Display Off / Display On buttons, replaced by the switch.
     topics.append(f"{DISCOVERY_PREFIX}/button/{DEVICE_ID}/display_off/config")
     topics.append(f"{DISCOVERY_PREFIX}/button/{DEVICE_ID}/display_on/config")
+    # 0.12.0 removed the Brightness light entity -- the Display switch is
+    # the only screen control now. Two overlapping ones was the problem:
+    # turning the light off dimmed to 0 without wiping, which looks
+    # identical to Display off but isn't, and both wrote the same
+    # brightness state. The panel still runs at ON_BRIGHTNESS internally
+    # (uploads and the keepalive have to send a brightness with every
+    # wake), and akp05/cmd's set_brightness action still works.
+    topics.append(f"{DISCOVERY_PREFIX}/light/{DEVICE_ID}/brightness/config")
+    topics.append(f"{DEVICE_ID}/power/state")
+    topics.append(f"{DEVICE_ID}/brightness/state")
     return topics
 
 # Supervisor is *supposed* to inject these once an MQTT broker is
@@ -379,29 +397,6 @@ MQTT_HOST = OPTIONS.get("mqtt_host") or os.environ.get("MQTT_HOST", "core-mosqui
 MQTT_PORT = int(OPTIONS.get("mqtt_port") or os.environ.get("MQTT_PORT", "1883"))
 MQTT_USERNAME = OPTIONS.get("mqtt_username") or os.environ.get("MQTT_USERNAME") or None
 MQTT_PASSWORD = OPTIONS.get("mqtt_password") or os.environ.get("MQTT_PASSWORD") or None
-
-
-def _light_discovery_payload() -> dict:
-    # The standard MQTT light shape (separate command_topic for on/off,
-    # plus brightness_command_topic/brightness_state_topic) rather than
-    # the on_command_type: brightness shortcut this used before -- that
-    # relies on command_topic being safely omittable, which isn't
-    # actually certain, and a schema-validation failure on this payload
-    # would silently produce zero entities, which is exactly what was
-    # seen. This shape is unambiguously well-supported.
-    return {
-        "name": "Brightness",
-        "unique_id": f"{DEVICE_ID}_brightness",
-        "command_topic": POWER_SET_TOPIC,
-        "state_topic": POWER_STATE_TOPIC,
-        "payload_on": "ON",
-        "payload_off": "OFF",
-        "brightness_command_topic": BRIGHTNESS_SET_TOPIC,
-        "brightness_state_topic": BRIGHTNESS_STATE_TOPIC,
-        "brightness_scale": 100,
-        "availability_topic": STATUS_TOPIC,
-        "device": DEVICE_INFO,
-    }
 
 
 def _event_entities():
@@ -568,11 +563,6 @@ def _display_switch_discovery_payload() -> dict:
 
 def publish_discovery(client: mqtt.Client):
     client.publish(
-        f"{DISCOVERY_PREFIX}/light/{DEVICE_ID}/brightness/config",
-        json.dumps(_light_discovery_payload()),
-        retain=True,
-    )
-    client.publish(
         f"{DISCOVERY_PREFIX}/switch/{DEVICE_ID}/display/config",
         json.dumps(_display_switch_discovery_payload()),
         retain=True,
@@ -640,11 +630,10 @@ class Bridge:
     def __init__(self, client: mqtt.Client):
         self.client = client
         self.device = None
-        # Panel starts at 100% (the full init sequence itself says 50;
-        # connect_device() sets this right after). The light entity
-        # still adjusts it from there.
-        self.brightness = 100
-        self._last_nonzero_brightness = 100
+        # Panel starts at ON_BRIGHTNESS (the full init sequence itself
+        # says 50; connect_device() sets this right after).
+        self.brightness = ON_BRIGHTNESS
+        self._last_nonzero_brightness = ON_BRIGHTNESS
         self._reconnect_lock = threading.Lock()
         # Persisted across restarts. A button shows an icon OR a text
         # value, never both -- set_icon/set_text each clear the other's
@@ -755,8 +744,6 @@ class Bridge:
         return self.device.hid_caps.output_report_byte_length
 
     def publish_state(self):
-        self.client.publish(BRIGHTNESS_STATE_TOPIC, str(self.brightness), retain=True)
-        self.client.publish(POWER_STATE_TOPIC, "ON" if self.brightness > 0 else "OFF", retain=True)
         self.client.publish(
             DISPLAY_STATE_TOPIC,
             DISPLAY_ON_PAYLOAD if self.display_on_state else DISPLAY_OFF_PAYLOAD,
@@ -770,9 +757,6 @@ class Bridge:
         if value > 0:
             self._last_nonzero_brightness = value
         self.publish_state()
-
-    def set_power(self, on: bool):
-        self.set_brightness(self._last_nonzero_brightness if on else 0)
 
     def clear_all(self):
         """Dims to 0% AND wipes every button/strip image to black -- the
@@ -1079,8 +1063,6 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         )
         return
     print(f"Connected to MQTT broker (host={MQTT_HOST}, user={MQTT_USERNAME or '(none)'})")
-    client.subscribe(POWER_SET_TOPIC)
-    client.subscribe(BRIGHTNESS_SET_TOPIC)
     client.subscribe(CMD_TOPIC)
     for topic in ICON_SET_TOPICS:
         client.subscribe(topic)
@@ -1112,11 +1094,7 @@ def on_message(client, userdata, msg):
         print(f"Device not connected -- ignoring message on {msg.topic}")
         return
     try:
-        if msg.topic == POWER_SET_TOPIC:
-            bridge.set_power(msg.payload.decode().strip().upper() == "ON")
-        elif msg.topic == BRIGHTNESS_SET_TOPIC:
-            bridge.set_brightness(int(msg.payload.decode()))
-        elif msg.topic == CMD_TOPIC:
+        if msg.topic == CMD_TOPIC:
             _handle_cmd(bridge, json.loads(msg.payload.decode()))
         elif msg.topic == DISPLAY_SET_TOPIC:
             # The Display switch -- same code paths as akp05/cmd's
