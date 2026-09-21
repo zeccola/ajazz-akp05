@@ -297,8 +297,15 @@ def _load_json(path: str, default):
 
 
 def _save_json(path: str, data):
-    with open(path, "w", encoding="utf-8") as f:
+    # Temp file + rename: a save interrupted partway (the container being
+    # stopped mid-write) leaves invalid JSON, and _load_json above then
+    # silently falls back to its default -- every remembered icon/text
+    # value gone, nothing restored on the next start, and the entities
+    # reading back as unknown.
+    tmp = f"{path}.part"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
+    os.replace(tmp, path)
 
 
 BUTTON_KEYS = set(range(1, 11))
@@ -335,6 +342,12 @@ STRIP_REFRESH_SECONDS = max(5, int(OPTIONS.get("strip_refresh_seconds") or 30))
 akp05_device.LEGACY_WAKE = bool(OPTIONS.get("legacy_wake_sequence", False))
 if akp05_device.LEGACY_WAKE:
     print("legacy_wake_sequence is on: using the pre-0.10.3 (blinking) wake/upload sequence")
+# The strip's composite canvas -- what set_strip_chunk (and so every Bar
+# entity) pastes into. It defaults to sitting next to akp05_device.py,
+# which inside this container is the image layer: an add-on rebuild wiped
+# it, so the first bar write afterwards composited onto a black canvas
+# and silently blanked the other three. /data survives updates.
+akp05_device.STRIP_CACHE_PATH = "/data/strip_cache.png"
 
 
 def _stale_retained_topics() -> list[str]:

@@ -16,7 +16,10 @@ On first use, downloads and caches these next to this file in
     font covering every weight/width, loaded plain/default here).
 
 Needs internet access on first use per font; after that, everything is
-read from the local cache and no network call is needed to render.
+read from the local cache and no network call is needed to render. The
+Home Assistant add-on doesn't rely on that first-use download at all --
+its Dockerfile calls prefetch_fonts() at build time so the fonts ship
+inside the image (see that function for why).
 """
 
 import json
@@ -61,20 +64,27 @@ def state_color(is_on: bool | None):
     return COLOR_UNKNOWN
 
 
+def _download(url: str, dest: str, label: str):
+    """Fetch to a temp file, then rename into place. The caching checks
+    below only test whether the file exists, so a half-written one (the
+    process killed mid-write) would look cached forever and fail every
+    later render -- surviving restarts, since nothing re-downloads a
+    file that's already there."""
+    print(f"Downloading {label} (one-time)...")
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    tmp = f"{dest}.part"
+    with open(tmp, "wb") as f:
+        f.write(resp.content)
+    os.replace(tmp, dest)
+
+
 def _ensure_cached():
     os.makedirs(CACHE_DIR, exist_ok=True)
     if not os.path.exists(FONT_PATH):
-        print("Downloading MDI icon font (one-time, ~1.3MB)...")
-        resp = requests.get(FONT_URL, timeout=30)
-        resp.raise_for_status()
-        with open(FONT_PATH, "wb") as f:
-            f.write(resp.content)
+        _download(FONT_URL, FONT_PATH, "MDI icon font, ~1.3MB")
     if not os.path.exists(META_PATH):
-        print("Downloading MDI icon metadata (one-time, ~2MB)...")
-        resp = requests.get(META_URL, timeout=30)
-        resp.raise_for_status()
-        with open(META_PATH, "wb") as f:
-            f.write(resp.content)
+        _download(META_URL, META_PATH, "MDI icon metadata, ~2MB")
 
 
 def _codepoint_map() -> dict[str, str]:
@@ -102,11 +112,20 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
 def _ensure_roboto_cached():
     os.makedirs(CACHE_DIR, exist_ok=True)
     if not os.path.exists(ROBOTO_PATH):
-        print("Downloading Roboto font (one-time, ~1.7MB)...")
-        resp = requests.get(ROBOTO_URL, timeout=30)
-        resp.raise_for_status()
-        with open(ROBOTO_PATH, "wb") as f:
-            f.write(resp.content)
+        _download(ROBOTO_URL, ROBOTO_PATH, "Roboto font, ~1.7MB")
+
+
+def prefetch_fonts():
+    """Download both fonts now rather than on the first render. The
+    add-on's Dockerfile calls this at build time so the container never
+    needs network access to draw anything: CACHE_DIR sits in the image
+    layer, so a rebuild used to wipe it and leave every icon/text render
+    failing until jsdelivr/GitHub were reachable again -- with button
+    presses still working, since they never come through here, and
+    neither a restart nor a replug fixing it. Failing here breaks the
+    image build loudly instead."""
+    _ensure_cached()
+    _ensure_roboto_cached()
 
 
 def _roboto_font(size: int) -> ImageFont.FreeTypeFont:

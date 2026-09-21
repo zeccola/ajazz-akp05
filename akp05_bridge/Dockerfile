@@ -20,4 +20,13 @@ RUN apk add --no-cache --virtual .build-deps build-base jpeg-dev zlib-dev freety
 
 COPY run.py akp05_device.py akp05_icons.py ./
 
+# Bake the MDI + Roboto fonts into the image rather than fetching them on
+# the first icon/text render. They cache next to akp05_icons.py, i.e. in
+# this image layer, so a rebuild wiped them and left every icon and text
+# set failing until jsdelivr/GitHub were reachable again -- while button
+# presses kept working (they never touch the font code), and neither an
+# add-on restart nor a replug made any difference. A download failure now
+# breaks the build loudly instead of surfacing as that at runtime.
+RUN python3 -c "import akp05_icons; akp05_icons.prefetch_fonts()"
+
 CMD [ "python3", "/app/run.py" ]

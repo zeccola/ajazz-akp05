@@ -145,12 +145,23 @@ def load_strip_canvas():
     from PIL import Image
 
     if os.path.exists(STRIP_CACHE_PATH):
-        return Image.open(STRIP_CACHE_PATH).convert("RGB")
+        try:
+            return Image.open(STRIP_CACHE_PATH).convert("RGB")
+        except OSError:
+            # A truncated/corrupt cache (process killed mid-save) would
+            # otherwise raise on every strip write from here on -- every
+            # chunk/bar update dead, surviving restarts, with no way back
+            # short of deleting the file by hand. Start over instead.
+            print(f"Strip cache at {STRIP_CACHE_PATH} is unreadable -- starting from a black strip")
     return Image.new("RGB", STRIP_IMAGE_SIZE, (0, 0, 0))
 
 
 def save_strip_canvas(img):
-    img.save(STRIP_CACHE_PATH)
+    # Temp file + rename, so an interrupted save can't leave a partial
+    # PNG behind for load_strip_canvas to choke on (see above).
+    tmp = f"{STRIP_CACHE_PATH}.part"
+    img.save(tmp, format="PNG")
+    os.replace(tmp, STRIP_CACHE_PATH)
 
 
 def crt_command(command: str, payload: list[int], total_len: int) -> list[int]:

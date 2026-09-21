@@ -152,6 +152,26 @@ automatically once an MQTT broker add-on is running, no setup needed.
      now one uninterruptible batch. The add-on also logs every upload
      with its size and duration now, so if anything like this recurs
      the Log tab shows exactly what was sent last.
+   - **Every icon and text set fails (buttons still work), and neither
+     a restart nor a replug fixes it** — different bug from the one
+     above, despite looking the same from the outside; fixed in 0.11.1.
+     The MDI and Roboto fonts were downloaded on first use and cached
+     inside the image, so an add-on rebuild wiped them and every render
+     needed jsdelivr/GitHub to be reachable again. Until they were, all
+     icon/text renders raised, their entities stayed unknown (state is
+     only echoed after a successful render), and button presses carried
+     on working because they never touch the font code — hence a freeze
+     that ignores restarts and power-cycles. The fonts now ship baked
+     into the image, so nothing is fetched at runtime. Tell-tale in the
+     log: `Downloading MDI icon font...` followed by a connection or
+     timeout error on `akp05/button_<n>/icon/set`. Two smaller fixes in
+     the same release: fonts, `/data` state, and the strip canvas are
+     all written to a temp file and renamed now (an interrupted write
+     left a corrupt file that broke renders permanently, since nothing
+     re-fetches a file that already exists), an unreadable strip cache
+     falls back to black instead of failing every strip write from then
+     on, and that cache moved to `/data` so a rebuild no longer blanks
+     the other three bars on the next Bar write.
    - **Getting a useful log** — the add-on's Log tab only shows the
      last ~100 lines, which a few restarts fill with container
      start/stop noise. Use **Settings → System → Logs**, pick "AKP05
