@@ -193,6 +193,7 @@ import base64
 import json
 import os
 import queue
+import sys
 import threading
 import time
 from io import BytesIO
@@ -246,6 +247,9 @@ BACKLOG_WARN = 5
 WATCHDOG_INTERVAL = 5
 STUCK_JOB_SECONDS = 15
 BACKLOG_WARN_INTERVAL = 30
+# How long a reconnect waits for an in-flight write before closing the
+# device out from under it anyway.
+DEVICE_SWAP_TIMEOUT = 30
 
 
 def _icon_set_topic(button: int) -> str:
@@ -693,6 +697,17 @@ class Bridge:
         # (name, started) while a job is running, for the watchdog below.
         self._current_job: tuple[str, float] | None = None
         self._last_backlog_warning = 0.0
+        # What each button/bar is physically showing right now, so an
+        # identical repeat can be skipped instead of costing another
+        # ~350ms device write (real logs show the same outdoor
+        # temperature pushed four times in a row, byte-identical every
+        # time). In memory only, and cleared whenever the panel is wiped
+        # -- it tracks the panel, not what the user configured, so it
+        # must never suppress a restore onto a blanked screen.
+        self._on_screen: dict[str, tuple] = {}
+        # Held around each job and around a device swap, so a reconnect
+        # can't close the fd out from under an in-flight write.
+        self._device_lock = threading.RLock()
         threading.Thread(target=self._job_loop, daemon=True).start()
         threading.Thread(target=self._watchdog_loop, daemon=True).start()
 
@@ -718,7 +733,14 @@ class Bridge:
             self._current_job = (name, time.monotonic())
             started = time.monotonic()
             try:
-                job()
+                # Held across the job so a reconnect can't close the fd
+                # (and swap self.device) while this write is in flight.
+                # Both logs show the freeze arriving after a
+                # disconnect/reconnect cycle, and a close during another
+                # thread's write is exactly the kind of thing that ends
+                # with the panel accepting writes it never displays.
+                with self._device_lock:
+                    job()
             except Exception as exc:  # noqa: BLE001 - one bad command shouldn't kill the worker
                 print(f"Error handling {name}: {exc}")
             finally:
@@ -786,11 +808,24 @@ class Bridge:
         try:
             print("Device disconnected -- waiting for it to come back...")
             self.client.publish(STATUS_TOPIC, "offline", retain=True)
+            # Wait for any in-flight write to finish before closing the
+            # fd underneath it. Bounded: if a write is wedged and never
+            # returns, reconnecting anyway beats never reconnecting.
+            got_lock = self._device_lock.acquire(timeout=DEVICE_SWAP_TIMEOUT)
+            if not got_lock:
+                print(
+                    f"A device write has been in flight for over {DEVICE_SWAP_TIMEOUT}s -- "
+                    "reconnecting without waiting for it"
+                )
             try:
-                self.device.close()
-            except Exception:
-                pass
-            _connect_device_with_retry(self)
+                try:
+                    self.device.close()
+                except Exception:
+                    pass
+                _connect_device_with_retry(self)
+            finally:
+                if got_lock:
+                    self._device_lock.release()
             print("Device reconnected")
             self.client.publish(STATUS_TOPIC, "online", retain=True)
         finally:
@@ -807,6 +842,10 @@ class Bridge:
         was active (bars restore first since setting a bar forgets
         whole-strip text/URL, so the two groups shouldn't both be
         populated at once in practice)."""
+        # Every caller of this got here by wiping the panel (a connect's
+        # full_init, or display_off's CLE). Nothing is on screen, so the
+        # dedup must not think otherwise and skip the whole restore.
+        self._on_screen.clear()
         for button, icon in list(self.button_icons.items()):
             try:
                 self.set_icon(button, icon, None)
@@ -933,6 +972,16 @@ class Bridge:
             crt_command("CLE", [0x00, 0x00, 0x00, wire_key], out_len),
             crt_command("STP", [], out_len),
         ])
+        # Forget what was here. Home Assistant sets these text entities by
+        # clearing then writing, so without this the rewrite of the same
+        # value would be skipped as redundant and the button would stay
+        # blank -- and a reconnect would restore something explicitly
+        # cleared.
+        self._on_screen.pop(f"button_{button}", None)
+        if self.button_icons.pop(button, None) is not None:
+            _save_json(ICONS_PATH, self.button_icons)
+        if self.button_texts.pop(button, None) is not None:
+            _save_json(TEXTS_PATH, self.button_texts)
 
     def set_strip(self, jpeg_bytes: bytes):
         started = time.monotonic()
@@ -1020,18 +1069,33 @@ class Bridge:
             except Exception as exc:  # noqa: BLE001 - e.g. device mid-reconnect
                 print(f"Strip URL paint failed: {exc}")
 
+    def _already_showing(self, key: str, signature: tuple) -> bool:
+        """True if the panel already shows exactly this, so the upload
+        can be skipped. State is part of the signature, so an on/off
+        recolour of the same icon still goes through."""
+        if self._on_screen.get(key) != signature:
+            return False
+        print(f"{key} already shows {signature[1]!r} -- skipping a redundant upload")
+        return True
+
     def set_icon(self, button: int, icon: str, state: str | None):
+        if self._already_showing(f"button_{button}", ("icon", icon, state)):
+            return
         is_on = {"on": True, "off": False}.get(state)
         img = build_icon(icon, is_on)  # raises KeyError for an unrecognized name -- caller decides how to handle
         self.set_button_image(button, encode_image(img, img.size))
+        self._on_screen[f"button_{button}"] = ("icon", icon, state)
         self.button_icons[button] = icon
         _save_json(ICONS_PATH, self.button_icons)
         if self.button_texts.pop(button, None) is not None:
             _save_json(TEXTS_PATH, self.button_texts)
 
     def set_text(self, button: int, text: str):
+        if self._already_showing(f"button_{button}", ("text", text, None)):
+            return
         img = build_text(text)
         self.set_button_image(button, encode_image(img, img.size))
+        self._on_screen[f"button_{button}"] = ("text", text, None)
         self.button_texts[button] = text
         _save_json(TEXTS_PATH, self.button_texts)
         if self.button_icons.pop(button, None) is not None:
@@ -1043,9 +1107,12 @@ class Bridge:
         set_strip_chunk (bar 1-4 maps onto the CLI's chunk 11-14
         numbering) and re-uploads the whole strip. Takes over the strip
         from whole-strip text/URL mode, same as a raw set_strip_chunk."""
+        if self._already_showing(f"bar_{bar}", ("icon", icon, state)):
+            return
         is_on = {"on": True, "off": False}.get(state)
         img = build_icon(icon, is_on, size=STRIP_BAR_SIZE)  # raises KeyError for an unrecognized name
         self.set_strip_chunk(bar + 10, img)
+        self._on_screen[f"bar_{bar}"] = ("icon", icon, state)
         self.forget_strip_text()
         self.forget_strip_url()
         self.bar_icons[bar] = icon
@@ -1054,8 +1121,11 @@ class Bridge:
             _save_json(BAR_TEXTS_PATH, self.bar_texts)
 
     def set_bar_text(self, bar: int, text: str):
+        if self._already_showing(f"bar_{bar}", ("text", text, None)):
+            return
         img = build_text(text, size=STRIP_BAR_SIZE)
         self.set_strip_chunk(bar + 10, img)
+        self._on_screen[f"bar_{bar}"] = ("text", text, None)
         self.forget_strip_text()
         self.forget_strip_url()
         self.bar_texts[bar] = text
@@ -1064,6 +1134,7 @@ class Bridge:
             _save_json(BAR_ICONS_PATH, self.bar_icons)
 
     def clear_bar(self, bar: int):
+        self._on_screen.pop(f"bar_{bar}", None)
         self.set_strip_chunk(bar + 10, Image.new("RGB", STRIP_BAR_SIZE, (0, 0, 0)))
         self.forget_strip_text()
         self.forget_strip_url()
@@ -1194,6 +1265,40 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     client.publish(STATUS_TOPIC, "online" if device_ready else "offline", retain=True)
     if device_ready:
         bridge.publish_state()
+
+
+class _TimestampedOutput:
+    """Prefixes every line printed to stdout with a wall-clock time.
+
+    Wrapping the stream instead of changing call sites means lines from
+    akp05_device get stamped too -- it's shared with the CLI scripts,
+    which shouldn't grow timestamps -- and nothing has to remember to
+    use a logger. Without these, working out when the panel stopped
+    meant counting entries off whatever clock the user happened to have
+    rendered on a button."""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._line_start = True
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+        stamp = time.strftime("%H:%M:%S ")
+        out = []
+        for piece in text.splitlines(keepends=True):
+            if self._line_start:
+                out.append(stamp)
+            out.append(piece)
+            self._line_start = piece.endswith("\n")
+        self._stream.write("".join(out))
+        return len(text)
+
+    def flush(self):
+        self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
 
 
 class _Msg:
@@ -1333,6 +1438,7 @@ def _connect_device_with_retry(bridge: Bridge):
 
 
 def main():
+    sys.stdout = _TimestampedOutput(sys.stdout)
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=DEVICE_ID)
     if MQTT_USERNAME:
         client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
