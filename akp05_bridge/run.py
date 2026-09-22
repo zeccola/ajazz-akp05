@@ -222,7 +222,24 @@ from akp05_device import (
 from akp05_icons import build_icon, build_text
 
 OPTIONS_PATH = "/data/options.json"
+CONFIG_PATH = "/app/config.yaml"
 DEVICE_ID = "akp05"
+
+
+def addon_version() -> str:
+    """Read the version straight out of config.yaml, which the Dockerfile
+    copies in beside this file. Printed at startup because there was
+    otherwise no way to tell from a log which build produced it -- two
+    rounds of fixes were debugged against logs from an older image before
+    anyone noticed the running add-on hadn't been rebuilt."""
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("version:"):
+                    return line.split(":", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return "unknown"
 
 STATUS_TOPIC = f"{DEVICE_ID}/status"
 # Plain "event_type:object_id" on one shared topic, used only by the
@@ -1439,6 +1456,7 @@ def _connect_device_with_retry(bridge: Bridge):
 
 def main():
     sys.stdout = _TimestampedOutput(sys.stdout)
+    print(f"AKP05 Bridge {addon_version()} starting")
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=DEVICE_ID)
     if MQTT_USERNAME:
         client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)

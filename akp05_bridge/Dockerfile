@@ -18,7 +18,10 @@ RUN apk add --no-cache --virtual .build-deps build-base jpeg-dev zlib-dev freety
     && pip install --no-cache-dir -r requirements.txt \
     && apk del .build-deps
 
-COPY run.py akp05_device.py akp05_icons.py ./
+# config.yaml comes along so run.py can print its own version at startup
+# -- a log with no version in it can't be matched to a build, which is
+# exactly how two rounds of fixes got debugged against an older image.
+COPY run.py akp05_device.py akp05_icons.py config.yaml ./
 
 # Bake the MDI + Roboto fonts into the image rather than fetching them on
 # the first icon/text render. They cache next to akp05_icons.py, i.e. in
