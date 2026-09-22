@@ -356,6 +356,7 @@ def open_device(raw_data_handler=None, on_disconnect=None):
 
     out_len = device.hid_caps.output_report_byte_length
     device._write_lock = threading.Lock()
+    device._last_keepalive = time.monotonic()
     _start_keepalive(device, out_len, on_disconnect)
     return device
 
@@ -479,22 +480,49 @@ def upload_image(device, wire_key: int, jpeg_bytes: bytes, brightness: int = 50)
         device._write_lock.release()
 
 
+def _keepalive_commands(device, out_len: int) -> list[list[int]]:
+    # The wake pair is required here (see module docstring: CONNECT
+    # alone kills image updates after the first tick). A long-running
+    # caller that tracks brightness (the add-on) gets DIS + LIG <its
+    # value> -- no pass through 0, so no blink -- via wake_sequence();
+    # one-shot CLI callers keep the plain minimal init.
+    provider = getattr(device, "brightness_provider", None)
+    if provider is not None:
+        commands = wake_sequence(out_len, provider())
+    else:
+        commands = minimal_init_sequence(out_len)
+    commands.append(keep_alive_command(out_len))
+    return commands
+
+
+def keepalive_if_due(device) -> bool:
+    """Send a keepalive if one is due; returns whether it went.
+
+    The background thread below has to take the write lock like everyone
+    else, so a run of image uploads starves it: each upload holds the
+    lock for ~350ms, a queued backlog of them runs for many seconds, and
+    this panel drops its connection after roughly 15 without a
+    keepalive. Worse, that drop triggers a reconnect whose restore is
+    itself a burst of uploads, which can starve the next keepalive in
+    turn -- a spiral that shows up as the panel working for a few
+    minutes and then dying. A caller working through a queue of uploads
+    should call this between them so a backlog can't cost the
+    connection."""
+    last = getattr(device, "_last_keepalive", 0.0)
+    if time.monotonic() - last < KEEPALIVE_INTERVAL:
+        return False
+    out_len = device.hid_caps.output_report_byte_length
+    send_commands(device, _keepalive_commands(device, out_len))
+    device._last_keepalive = time.monotonic()
+    return True
+
+
 def _keepalive_loop(device, out_len: int, stop_event: threading.Event, on_disconnect):
-    while not stop_event.wait(KEEPALIVE_INTERVAL):
+    # Checks twice as often as the interval, since keepalive_if_due()
+    # skips when a caller (the add-on's upload worker) already sent one.
+    while not stop_event.wait(KEEPALIVE_INTERVAL / 2):
         try:
-            # The wake pair is required here (see module docstring:
-            # CONNECT alone kills image updates after the first tick).
-            # A long-running caller that tracks brightness (the add-on)
-            # gets DIS + LIG <its value> -- no pass through 0, so no
-            # blink -- via wake_sequence(); one-shot CLI callers keep
-            # the plain minimal init.
-            provider = getattr(device, "brightness_provider", None)
-            if provider is not None:
-                commands = wake_sequence(out_len, provider())
-            else:
-                commands = minimal_init_sequence(out_len)
-            commands.append(keep_alive_command(out_len))
-            send_commands(device, commands)
+            keepalive_if_due(device)
         except Exception:
             if on_disconnect is not None:
                 try:

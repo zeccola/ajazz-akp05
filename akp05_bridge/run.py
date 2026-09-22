@@ -241,6 +241,11 @@ ON_BRIGHTNESS = 100
 # means the device is dragging, not that the command was large.
 SLOW_JOB_SECONDS = 5
 BACKLOG_WARN = 5
+# How often the watchdog checks the in-flight job, and how long that job
+# has to have been running before it says so.
+WATCHDOG_INTERVAL = 5
+STUCK_JOB_SECONDS = 15
+BACKLOG_WARN_INTERVAL = 30
 
 
 def _icon_set_topic(button: int) -> str:
@@ -685,7 +690,11 @@ class Bridge:
         # still execute in the order they arrived (two threads writing
         # images at once would fight over the device anyway).
         self._jobs: queue.Queue = queue.Queue()
+        # (name, started) while a job is running, for the watchdog below.
+        self._current_job: tuple[str, float] | None = None
+        self._last_backlog_warning = 0.0
         threading.Thread(target=self._job_loop, daemon=True).start()
+        threading.Thread(target=self._watchdog_loop, daemon=True).start()
 
     def submit(self, name: str, job):
         self._jobs.put((name, job))
@@ -693,21 +702,61 @@ class Bridge:
     def _job_loop(self):
         while True:
             name, job = self._jobs.get()
+            # Before each upload, not just on the keepalive thread's own
+            # schedule: that thread waits for the same write lock every
+            # upload holds, so a queue of them starves it and the panel
+            # drops its connection after ~15s without one. The drop then
+            # triggers a reconnect whose restore is another burst of
+            # uploads, starving the next keepalive in turn -- the panel
+            # works for a few minutes, then dies. Sending it here, with
+            # no upload in flight, breaks that cycle.
+            if self.device is not None:
+                try:
+                    akp05_device.keepalive_if_due(self.device)
+                except Exception as exc:  # noqa: BLE001 - the job itself is what matters
+                    print(f"Keepalive before {name} failed: {exc}")
+            self._current_job = (name, time.monotonic())
             started = time.monotonic()
             try:
                 job()
             except Exception as exc:  # noqa: BLE001 - one bad command shouldn't kill the worker
                 print(f"Error handling {name}: {exc}")
+            finally:
+                self._current_job = None
             took = time.monotonic() - started
-            # A stuck device write can't block MQTT any more, but it can
-            # still stall this queue -- say so, since the symptom in Home
-            # Assistant (commands accepted, nothing happening) otherwise
-            # gives no clue where the time went.
             if took > SLOW_JOB_SECONDS:
                 print(f"{name} took {took:.1f}s -- device writes are running slow")
             backlog = self._jobs.qsize()
-            if backlog > BACKLOG_WARN:
+            # Rate-limited: this fired once per job before, so a backlog
+            # of 50 buried the log in 50 near-identical lines just when
+            # the surrounding lines were the ones worth reading.
+            now = time.monotonic()
+            if backlog > BACKLOG_WARN and now - self._last_backlog_warning > BACKLOG_WARN_INTERVAL:
                 print(f"{backlog} commands queued behind the device -- it may be unresponsive")
+                self._last_backlog_warning = now
+
+    def _watchdog_loop(self):
+        """Reports a job that is STILL running, from outside the worker.
+
+        The timings above only print once a job returns, so a write that
+        never returns produced no log line at all -- the add-on simply
+        went quiet, which is the single least useful thing it could do
+        while wedged. This says so while it's happening."""
+        warned_at = None
+        while True:
+            time.sleep(WATCHDOG_INTERVAL)
+            current = self._current_job
+            if current is None:
+                warned_at = None
+                continue
+            name, started = current
+            running = time.monotonic() - started
+            if running > STUCK_JOB_SECONDS and warned_at != started:
+                print(
+                    f"{name} has been running {running:.0f}s with no result -- the device has "
+                    f"stopped accepting writes ({self._jobs.qsize()} command(s) queued behind it)"
+                )
+                warned_at = started
 
     def connect_device(self):
         self.device = connect(self._on_report, full_init=True, on_disconnect=self._handle_disconnect)
@@ -828,10 +877,22 @@ class Bridge:
         """Pairs with clear_all/display_off: restores brightness and
         re-renders every button's remembered icon or text value (reuses
         the same restore logic connect_device() already uses after a
-        reconnect -- this just triggers it on demand instead)."""
+        reconnect -- this just triggers it on demand instead).
+
+        Only re-renders if the display was actually off. Nothing wiped
+        the screen in that case, so the restore is pure redundant work:
+        every button and bar re-uploaded, ~350ms of held write lock
+        each. Repeated ON commands (an automation re-asserting the
+        switch, say) were turning that into seconds of back-to-back
+        uploads that starve the keepalive and cost the connection --
+        real logs showed four full restores inside two minutes."""
+        was_off = not self.display_on_state
         self.display_on_state = True
         self.set_brightness(self._last_nonzero_brightness)
-        self._restore_button_displays()
+        if was_off:
+            self._restore_button_displays()
+        else:
+            print("Display already on -- skipping the re-render of every button")
 
     def sleep_display(self):
         """EXPERIMENTAL, unconfirmed on real AKP05 hardware -- do not

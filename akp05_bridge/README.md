@@ -172,6 +172,24 @@ automatically once an MQTT broker add-on is running, no setup needed.
      falls back to black instead of failing every strip write from then
      on, and that cache moved to `/data` so a rebuild no longer blanks
      the other three bars on the next Bar write.
+   - **The panel works for a few minutes after a restart, then stops
+     updating** — partly addressed in 0.13.1, and worth reading the log
+     before assuming it's the same thing. Real logs showed the device
+     dropping off the USB bus outright (`No hidraw device found for
+     VID_0300 & PID_3004` after a `Device disconnected`), which the
+     add-on now recovers from on its own. They also showed a *lot* of
+     redundant work: a `display_on` while the display was already on
+     re-uploaded every button and bar, ~350ms of device writes each, and
+     four of those full restores landed inside two minutes. Nothing had
+     wiped the screen, so that work was pure load on a panel already
+     taking a text update every few seconds; `display_on` now skips the
+     re-render unless the display was actually off. If yours still dies,
+     the log will now say what it was doing when it stopped: a
+     background watchdog reports the in-flight command *while it's still
+     stuck* (`has been running Ns with no result`), which earlier
+     versions couldn't, because the timing was only printed once a
+     command finished — so a write that never returned logged nothing at
+     all and the add-on just went quiet.
    - **Everything you set from Home Assistant is dead — icons, text,
      and the Display switch (which never updates its own state) — but
      button presses still work, and no restart or replug helps** —
