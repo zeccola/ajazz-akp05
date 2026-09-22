@@ -172,6 +172,24 @@ automatically once an MQTT broker add-on is running, no setup needed.
      falls back to black instead of failing every strip write from then
      on, and that cache moved to `/data` so a rebuild no longer blanks
      the other three bars on the next Bar write.
+   - **Everything you set from Home Assistant is dead — icons, text,
+     and the Display switch (which never updates its own state) — but
+     button presses still work, and no restart or replug helps** —
+     fixed in 0.13.0, and the giveaway is the Display switch: it renders
+     nothing and needs no fonts, so if it's dead too the problem isn't
+     rendering. Incoming commands were handled on the MQTT client's
+     network thread, and that thread also did the device writes. A write
+     that hangs on an unresponsive panel (nothing had a timeout) froze
+     it for good, so no later command was even read. Button presses were
+     unaffected because they're published from a different thread, which
+     is what makes this look like "the display froze but the buttons are
+     fine". It came back after every restart because the connect-time
+     writes hit the same wall. Now: commands are queued onto a worker
+     thread so MQTT never touches the device, waiting for the device
+     write lock times out instead of blocking forever, and both get
+     logged — look for `took Ns -- device writes are running slow`,
+     `commands queued behind the device`, or `an earlier write is stuck
+     on the panel`.
    - **Icons render but text doesn't (or vice versa)** — fixed in
      0.12.0. The two fonts used to come from two different hosts: MDI
      from jsdelivr, Roboto from `raw.githubusercontent.com`. A network

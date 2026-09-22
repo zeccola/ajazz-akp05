@@ -163,6 +163,19 @@ docstring before relying on this for anything -- worst case, if the panel
 stops responding to anything, a physical unplug/replug may be the only
 way to recover it.
 
+Threading: paho's network thread only ever parses an incoming message
+and queues it (see on_message); the work itself -- rendering, and every
+write to the device -- happens on the Bridge's own worker thread. That
+separation is the point. When the two were the same thread, a single
+write stuck on an unresponsive panel froze it permanently, so no later
+command was even read: icons, text and the display switch all went dead
+together and stayed dead through restarts and replugs, while button
+presses carried on working (they're published from the HID read thread).
+Device writes also no longer wait forever for the write lock -- see
+akp05_device.WRITE_LOCK_TIMEOUT and DeviceBusyError -- so one stuck
+write can't silently take the keepalive with it either; it raises, gets
+logged, and the keepalive's failure path triggers a reconnect.
+
 Startup order: MQTT first, then the device. Until the AKP05 is found,
 akp05/status reads "offline" (so its entities show unavailable in Home
 Assistant rather than silently stale) and every command is logged and
@@ -179,6 +192,7 @@ state, calling the akp05/cmd set_icon action with the appropriate
 import base64
 import json
 import os
+import queue
 import threading
 import time
 from io import BytesIO
@@ -222,6 +236,11 @@ CMD_TOPIC = f"{DEVICE_ID}/cmd"
 # a brightness value still has to be sent with every wake/upload, and
 # akp05/cmd's set_brightness action can still change it.
 ON_BRIGHTNESS = 100
+
+# A button upload is ~0.3s and a full strip ~0.75s, so anything past this
+# means the device is dragging, not that the command was large.
+SLOW_JOB_SECONDS = 5
+BACKLOG_WARN = 5
 
 
 def _icon_set_topic(button: int) -> str:
@@ -661,6 +680,34 @@ class Bridge:
         self.strip_url: str = _load_json(STRIP_URL_PATH, "")
         self._strip_url_wake = threading.Event()
         threading.Thread(target=self._strip_url_loop, daemon=True).start()
+        # Every incoming command runs here rather than on paho's network
+        # thread -- see on_message. One queue, one worker, so commands
+        # still execute in the order they arrived (two threads writing
+        # images at once would fight over the device anyway).
+        self._jobs: queue.Queue = queue.Queue()
+        threading.Thread(target=self._job_loop, daemon=True).start()
+
+    def submit(self, name: str, job):
+        self._jobs.put((name, job))
+
+    def _job_loop(self):
+        while True:
+            name, job = self._jobs.get()
+            started = time.monotonic()
+            try:
+                job()
+            except Exception as exc:  # noqa: BLE001 - one bad command shouldn't kill the worker
+                print(f"Error handling {name}: {exc}")
+            took = time.monotonic() - started
+            # A stuck device write can't block MQTT any more, but it can
+            # still stall this queue -- say so, since the symptom in Home
+            # Assistant (commands accepted, nothing happening) otherwise
+            # gives no clue where the time went.
+            if took > SLOW_JOB_SECONDS:
+                print(f"{name} took {took:.1f}s -- device writes are running slow")
+            backlog = self._jobs.qsize()
+            if backlog > BACKLOG_WARN:
+                print(f"{backlog} commands queued behind the device -- it may be unresponsive")
 
     def connect_device(self):
         self.device = connect(self._on_report, full_init=True, on_disconnect=self._handle_disconnect)
@@ -1088,11 +1135,39 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         bridge.publish_state()
 
 
+class _Msg:
+    """Just enough of paho's message object for _dispatch's body, which
+    was written against it and is otherwise left alone."""
+
+    __slots__ = ("topic", "payload")
+
+    def __init__(self, topic: str, payload: bytes):
+        self.topic = topic
+        self.payload = payload
+
+
 def on_message(client, userdata, msg):
+    """Hands the message to the bridge's worker thread and returns
+    immediately. This used to do the whole job inline, which meant every
+    device write happened on paho's network thread -- so one write stuck
+    on an unresponsive panel froze that thread for good and no later
+    message was even read, while button presses (HID read thread, and
+    paho publishes from the calling thread) kept working. Icons, text and
+    the fontless display switch all dying together while buttons carry on
+    is exactly what that looks like from Home Assistant."""
     bridge = bridge_holder["bridge"]
+    # Copy what we need now: msg isn't ours to keep once this returns.
+    topic, payload = msg.topic, bytes(msg.payload)
+    bridge.submit(topic, lambda: _dispatch(client, bridge, topic, payload))
+
+
+def _dispatch(client, bridge, topic: str, payload: bytes):
+    """The actual work, on the bridge's worker thread. Body is unchanged
+    from when this ran inline in on_message."""
     if bridge.device is None:
-        print(f"Device not connected -- ignoring message on {msg.topic}")
+        print(f"Device not connected -- ignoring message on {topic}")
         return
+    msg = _Msg(topic, payload)
     try:
         if msg.topic == CMD_TOPIC:
             _handle_cmd(bridge, json.loads(msg.payload.decode()))

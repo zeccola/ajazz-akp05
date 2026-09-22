@@ -360,11 +360,38 @@ def open_device(raw_data_handler=None, on_disconnect=None):
     return device
 
 
+# Longest any real batch should ever hold the write lock. The biggest
+# one is a full 800x112 strip upload: ~11 packets at 0.05s each, well
+# under a second. Anything still waiting after this isn't contention,
+# it's a write stuck on an unresponsive panel.
+WRITE_LOCK_TIMEOUT = 20
+
+
+class DeviceBusyError(RuntimeError):
+    """Raised instead of waiting forever for the write lock.
+
+    Every write used to block on this lock with no timeout, so a single
+    write stuck on a wedged panel took down every other writer for good:
+    the keepalive stopped, and (in the add-on) the thread handling
+    incoming commands stopped with it, which looks from Home Assistant
+    like icons, text and the display switch all going dead while button
+    presses -- read on a separate thread -- carry on working. Failing the
+    one command lets the caller log it and recover instead."""
+
+
 def _write_all(device, buffers):
     """Caller must hold device._write_lock."""
     for buf in buffers:
         device.send_output_report(buf)
         time.sleep(0.05)
+
+
+def _acquire_write_lock(device):
+    if not device._write_lock.acquire(timeout=WRITE_LOCK_TIMEOUT):
+        raise DeviceBusyError(
+            f"the device write lock has been held for over {WRITE_LOCK_TIMEOUT}s -- "
+            "an earlier write is stuck on the panel"
+        )
 
 
 def send_commands(device, buffers):
@@ -373,8 +400,11 @@ def send_commands(device, buffers):
     raw JPEG chunks has no per-chunk framing, so if the keepalive
     thread's own commands interleaved between chunks (each write on its
     own would still leave that gap), it would corrupt the upload."""
-    with device._write_lock:
+    _acquire_write_lock(device)
+    try:
         _write_all(device, buffers)
+    finally:
+        device._write_lock.release()
 
 
 def encode_image(image_or_path, size, rotate180: bool = True) -> bytes:
@@ -440,10 +470,13 @@ def upload_image(device, wire_key: int, jpeg_bytes: bytes, brightness: int = 50)
     # bug only surfaced once that clear was dropped for the no-blink
     # sequence.) The reference notes are explicit that uploads must be
     # serialised and allowed to settle before anything else is sent.
-    with device._write_lock:
+    _acquire_write_lock(device)
+    try:
         _write_all(device, prefix)
         _write_all(device, build_bat_commands(wire_key, jpeg_bytes, out_len))
         _write_all(device, [crt_command("STP", [], out_len)])
+    finally:
+        device._write_lock.release()
 
 
 def _keepalive_loop(device, out_len: int, stop_event: threading.Event, on_disconnect):
