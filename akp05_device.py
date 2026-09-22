@@ -302,19 +302,45 @@ class LinuxHidDevice:
 
 
 def _find_hidraw_path(vendor_id: int, product_id: int) -> str | None:
+    """Find the hidraw node for the AKP05's *vendor* interface.
+
+    The device publishes two HID interfaces under the same VID:PID --
+    the vendor one this driver talks to (input0, the one that also gets
+    a hiddev node) and a keyboard one (input1). Matching on VID:PID
+    alone and taking the first node is therefore a coin flip decided by
+    hidraw numbering, and that numbering moves: real dmesg from a unit
+    doing this shows the keyboard interface coming back as hidraw2
+    rather than hidraw1, because hidraw1 hadn't been released yet when
+    the device re-enumerated.
+
+    Opening the keyboard interface by mistake is near-undiagnosable from
+    the outside -- every write is accepted and nothing is ever
+    displayed, which is indistinguishable from a wedged panel, and it
+    survives an add-on restart because the numbering only resettles on a
+    reboot or replug. HID_PHYS is what disambiguates: it ends in
+    /input0 for the interface we want."""
     base = "/sys/class/hidraw"
     if not os.path.isdir(base):
         return None
     suffix = f"{vendor_id:08X}:{product_id:08X}"
+    matches = []
     for name in sorted(os.listdir(base)):
         try:
             with open(os.path.join(base, name, "device", "uevent")) as f:
-                content = f.read()
+                fields = dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line)
         except OSError:
             continue
-        for line in content.splitlines():
-            if line.startswith("HID_ID=") and line.split("=", 1)[1].upper().endswith(suffix):
-                return os.path.join("/dev", name)
+        if fields.get("HID_ID", "").upper().endswith(suffix):
+            matches.append((name, fields.get("HID_PHYS", "")))
+
+    for name, phys in matches:
+        if phys.endswith("/input0"):
+            if name != matches[0][0]:
+                print(f"Using {name} for the vendor interface (not {matches[0][0]}, which is another interface of the same device)")
+            return os.path.join("/dev", name)
+    if matches:
+        print(f"No /input0 interface found for VID_{vendor_id:04X} & PID_{product_id:04X} -- falling back to {matches[0][0]}")
+        return os.path.join("/dev", matches[0][0])
     return None
 
 

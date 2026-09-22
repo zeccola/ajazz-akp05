@@ -172,6 +172,32 @@ automatically once an MQTT broker add-on is running, no setup needed.
      falls back to black instead of failing every strip write from then
      on, and that cache moved to `/data` so a rebuild no longer blanks
      the other three bars on the next Bar write.
+   - **The device keeps disconnecting every few minutes** — check the
+     *host's* kernel log before assuming it's this add-on:
+     `dmesg | grep -iE "usb|hidraw" | tail -100` (from the SSH add-on;
+     BusyBox dmesg has no `-T`). On the unit this was chased on, the
+     answer was a USB hub, not the AKP05: every event was
+     `usb 1-4: USB disconnect` (a GenesysLogic USB2.1 Hub) followed
+     immediately by `usb 1-4.4: USB disconnect` (the AKP05 hanging off
+     it), then both re-enumerating a few seconds later, with no kernel
+     error of any kind. A clean hub disconnect/re-enumerate like that is
+     a power or cabling problem at the hub. Plugging the AKP05 straight
+     into the host is the test; a powered hub or a different cable is
+     the fix. Nothing in this add-on can prevent it -- it can only
+     recover, which it does.
+   - **After one of those disconnects, writes are accepted but nothing
+     ever appears, and only a reboot fixes it** — fixed in 0.15.0. The
+     AKP05 publishes two HID interfaces under one VID:PID: the vendor
+     one this add-on drives (`input0`) and a keyboard one (`input1`).
+     The lookup matched on VID:PID alone and took the lowest-numbered
+     hidraw node, which is a coin flip, and hidraw numbering moves
+     across re-enumerations -- the same dmesg above shows the keyboard
+     coming back as `hidraw2` rather than `hidraw1` because `hidraw1`
+     hadn't been released yet. Land the keyboard interface on the lower
+     number and every write goes to it: accepted, never displayed, and
+     unfixable by an add-on restart because only a reboot or replug
+     resettles the numbering. The lookup now selects on `HID_PHYS`
+     ending in `/input0`.
    - **The panel works for a few minutes after a restart, then stops
      updating** — partly addressed in 0.13.1, and worth reading the log
      before assuming it's the same thing. Real logs showed the device
